@@ -1,8 +1,17 @@
 use actix_web::{get, web, App, HttpServer, Responder};
+use askama::Template;
 
-#[get("/")]
-async fn index() -> impl Responder {
-    format!("Hello World!")
+#[derive(Template)]
+#[template(path = "index.html")]
+struct IndexTemplate<'a>{
+    name: &'a str,
+}
+
+#[get("/{name}")]
+async fn index(web::Path(name): web::Path<String>) -> impl Responder {
+    // format!("Hello World!")
+    let index = IndexTemplate{name: &name};
+    index.render().unwrap()
 }
 
 #[actix_web::main]
