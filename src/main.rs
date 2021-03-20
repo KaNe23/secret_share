@@ -92,8 +92,8 @@ async fn new_secret(params: web::Form<Secret>) -> impl Responder {
 }
 
 fn get_storage() -> Result<ValueRepo<Uuid, DirectoryStore>, acid_store::Error> {
-    let mut path = PathBuf::new();
-    path.push("store");
+    // move location into env var
+    let path = PathBuf::from("store");
 
     let store = DirectoryStore::new(path)?;
     OpenOptions::new(store).create::<ValueRepo<Uuid, _>>()
