@@ -92,6 +92,7 @@ async fn main() -> std::io::Result<()> {
                   .service(index)
                   .service(new_secret)
                   .service(get_secret)
+                  .data(web::Form::<Secret>::configure(|cfg| cfg.limit(256 * 1024)))
         )
         .bind("127.0.0.1:8080")?
         .run()
