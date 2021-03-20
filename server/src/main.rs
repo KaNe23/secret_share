@@ -1,6 +1,7 @@
 use std::{ops::Add, path::PathBuf, str::FromStr};
 use acid_store::repo::{value::ValueRepo, OpenOptions};
 use acid_store::{store::DirectoryStore, uuid::Uuid};
+use actix_files as fs;
 use actix_web::{
     get, middleware::Logger, post, web, App, FromRequest, HttpResponse, HttpServer, Responder,
 };
@@ -111,6 +112,7 @@ async fn main() -> std::io::Result<()> {
             .service(index)
             .service(new_secret)
             .service(get_secret)
+            .service(fs::Files::new("/pkg", "client/pkg").show_files_listing())
             .data(web::Form::<Secret>::configure(|cfg| cfg.limit(256 * 1024)))
     })
     .bind("127.0.0.1:8080")?
