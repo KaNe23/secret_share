@@ -1,10 +1,11 @@
 use std::{ops::Add, path::PathBuf, str::FromStr};
-
-use actix_web::{App, FromRequest, HttpResponse, HttpServer, Responder, get, middleware::Logger, post, web};
+use acid_store::repo::{value::ValueRepo, OpenOptions};
+use acid_store::{store::DirectoryStore, uuid::Uuid};
+use actix_web::{
+    get, middleware::Logger, post, web, App, FromRequest, HttpResponse, HttpServer, Responder,
+};
 use askama::Template;
 use serde::{Deserialize, Serialize};
-use acid_store::{store::DirectoryStore, uuid::Uuid};
-use acid_store::repo::{OpenOptions, value::ValueRepo};
 
 #[derive(Template)]
 #[template(path = "index.html", escape = "none")]
@@ -23,30 +24,34 @@ async fn index() -> impl Responder {
         body: &new_secret_template,
     };
     let body = index.render().unwrap();
-    HttpResponse::Ok().content_type("text/html; charset=utf-8").body(body)
+    HttpResponse::Ok()
+        .content_type("text/html; charset=utf-8")
+        .body(body)
 }
 
 #[get("/{uuid}")]
 async fn get_secret(web::Path(uuid): web::Path<String>) -> impl Responder {
     let mut store = get_storage();
 
-    let key = match Uuid::from_str(&uuid){
+    let key = match Uuid::from_str(&uuid) {
         Ok(key) => key,
         Err(msg) => return HttpResponse::InternalServerError().body(format!("Error: {}", msg)),
     };
 
-    let secret: String = match store.get(&key){
+    let secret: String = match store.get(&key) {
         Ok(secret) => secret,
         Err(msg) => return HttpResponse::NotFound().body(format!("Error: {}", msg)),
     };
 
     store.remove(&key);
 
-    if let Err(msg) = store.commit(){
-        return  HttpResponse::InternalServerError().body(format!("Error: {}", msg));
+    if let Err(msg) = store.commit() {
+        return HttpResponse::InternalServerError().body(format!("Error: {}", msg));
     }
 
-    HttpResponse::Ok().content_type("text/html; charset=utf-8").body(secret)
+    HttpResponse::Ok()
+        .content_type("text/html; charset=utf-8")
+        .body(secret)
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -59,28 +64,34 @@ async fn new_secret(params: web::Form<Secret>) -> impl Responder {
     let mut store = get_storage();
     let key = Uuid::new_v4();
 
-    if let Err(msg) = store.insert(key, &params.secret){
-        return  HttpResponse::InternalServerError().body(format!("Error: {}", msg));
+    if let Err(msg) = store.insert(key, &params.secret) {
+        return HttpResponse::InternalServerError().body(format!("Error: {}", msg));
     }
 
-    if let Err(msg) = store.commit(){
-        return  HttpResponse::InternalServerError().body(format!("Error: {}", msg));
+    if let Err(msg) = store.commit() {
+        return HttpResponse::InternalServerError().body(format!("Error: {}", msg));
     }
 
-    if let Ok(mut base_url) = std::env::var("BASE_URL"){
+    if let Ok(mut base_url) = std::env::var("BASE_URL") {
         base_url = base_url.add("/").add(&key.to_string());
-        HttpResponse::Ok().content_type("text/html; charset=utf-8").body(base_url)
-    }else{
-        HttpResponse::Ok().content_type("text/html; charset=utf-8").body(key.to_string())
+        HttpResponse::Ok()
+            .content_type("text/html; charset=utf-8")
+            .body(base_url)
+    } else {
+        HttpResponse::Ok()
+            .content_type("text/html; charset=utf-8")
+            .body(key.to_string())
     }
 }
 
-fn get_storage() -> ValueRepo<Uuid, DirectoryStore>{
+fn get_storage() -> ValueRepo<Uuid, DirectoryStore> {
     let mut path = PathBuf::new();
     path.push("store");
 
     let store = DirectoryStore::new(path).unwrap();
-    OpenOptions::new(store).create::<ValueRepo<Uuid, _>>().unwrap()
+    OpenOptions::new(store)
+        .create::<ValueRepo<Uuid, _>>()
+        .unwrap()
 }
 
 #[actix_web::main]
@@ -89,14 +100,15 @@ async fn main() -> std::io::Result<()> {
     std::env::set_var("RUST_LOG", "actix_web=info");
     env_logger::init();
 
-    HttpServer::new(||
-        App::new().wrap(Logger::default())
-                  .service(index)
-                  .service(new_secret)
-                  .service(get_secret)
-                  .data(web::Form::<Secret>::configure(|cfg| cfg.limit(256 * 1024)))
-        )
-        .bind("127.0.0.1:8080")?
-        .run()
-        .await
+    HttpServer::new(|| {
+        App::new()
+            .wrap(Logger::default())
+            .service(index)
+            .service(new_secret)
+            .service(get_secret)
+            .data(web::Form::<Secret>::configure(|cfg| cfg.limit(256 * 1024)))
+    })
+    .bind("127.0.0.1:8080")?
+    .run()
+    .await
 }
