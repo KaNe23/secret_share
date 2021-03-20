@@ -1,29 +1,18 @@
-use std::{ops::Add, path::PathBuf, str::FromStr};
 use acid_store::repo::{value::ValueRepo, OpenOptions};
 use acid_store::{store::DirectoryStore, uuid::Uuid};
 use actix_files as fs;
-use actix_web::{
-    get, middleware::Logger, post, web, App, FromRequest, HttpResponse, HttpServer, Responder,
-};
+use actix_web::{App, FromRequest, HttpMessage, HttpResponse, HttpServer, Responder, get, middleware::Logger, post, web::{self}};
 use askama::Template;
 use serde::{Deserialize, Serialize};
+use std::{ops::Add, path::PathBuf, str::FromStr};
 
 #[derive(Template)]
 #[template(path = "index.html", escape = "none")]
-struct IndexTemplate<'a> {
-    body: &'a NewSecretTemplate,
-}
-
-#[derive(Template)]
-#[template(path = "new_secret.html")]
-struct NewSecretTemplate {}
+struct IndexTemplate {}
 
 #[get("/")]
 async fn index() -> impl Responder {
-    let new_secret_template = NewSecretTemplate {};
-    let index = IndexTemplate {
-        body: &new_secret_template,
-    };
+    let index = IndexTemplate {};
     let body = index.render().unwrap();
     HttpResponse::Ok()
         .content_type("text/html; charset=utf-8")
@@ -32,7 +21,7 @@ async fn index() -> impl Responder {
 
 #[get("/{uuid}")]
 async fn get_secret(web::Path(uuid): web::Path<String>) -> impl Responder {
-    let mut store = match get_storage(){
+    let mut store = match get_storage() {
         Ok(store) => store,
         Err(msg) => return HttpResponse::InternalServerError().body(format!("Error: {}", msg)),
     };
@@ -64,8 +53,8 @@ pub struct Secret {
 }
 
 #[post("/new_secret")]
-async fn new_secret(params: web::Form<Secret>) -> impl Responder {
-    let mut store = match get_storage(){
+async fn new_secret(params: web::Json<Secret>) -> impl Responder {
+    let mut store = match get_storage() {
         Ok(store) => store,
         Err(msg) => return HttpResponse::InternalServerError().body(format!("Error: {}", msg)),
     };
@@ -80,16 +69,21 @@ async fn new_secret(params: web::Form<Secret>) -> impl Responder {
         return HttpResponse::InternalServerError().body(format!("Error: {}", msg));
     }
 
-    if let Ok(mut base_url) = std::env::var("BASE_URL") {
-        base_url = base_url.add("/").add(&key.to_string());
-        HttpResponse::Ok()
-            .content_type("text/html; charset=utf-8")
-            .body(base_url)
-    } else {
-        HttpResponse::Ok()
-            .content_type("text/html; charset=utf-8")
-            .body(key.to_string())
-    }
+    let response = client::app::CreateSecretResponse {
+        uuid: key.to_string(),
+    };
+
+    // if let Ok(mut base_url) = std::env::var("BASE_URL") {
+    //     base_url = base_url.add("/").add(&key.to_string());
+    HttpResponse::Ok().json(response)
+        // HttpResponse::Ok()
+        //     .content_type("text/html; charset=utf-8")
+        //     .body(base_url)
+    // } else {
+    //     HttpResponse::Ok()
+    //         .content_type("text/html; charset=utf-8")
+    //         .body(key.to_string())
+    // }
 }
 
 fn get_storage() -> Result<ValueRepo<Uuid, DirectoryStore>, acid_store::Error> {
@@ -113,7 +107,6 @@ async fn main() -> std::io::Result<()> {
             .service(new_secret)
             .service(get_secret)
             .service(fs::Files::new("/pkg", "client/pkg").show_files_listing())
-            .data(web::Form::<Secret>::configure(|cfg| cfg.limit(256 * 1024)))
     })
     .bind("127.0.0.1:8080")?
     .run()

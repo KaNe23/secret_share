@@ -14,6 +14,9 @@ serde = "1.0"
 env_logger = "0.8"
 acid-store = "0.6"
 
+
+client = { path = "../client"}
+
 # use the following for binary size optimization:
 
 # [profile.release]
