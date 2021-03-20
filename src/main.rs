@@ -31,7 +31,10 @@ async fn index() -> impl Responder {
 
 #[get("/{uuid}")]
 async fn get_secret(web::Path(uuid): web::Path<String>) -> impl Responder {
-    let mut store = get_storage();
+    let mut store = match get_storage(){
+        Ok(store) => store,
+        Err(msg) => return HttpResponse::InternalServerError().body(format!("Error: {}", msg)),
+    };
 
     let key = match Uuid::from_str(&uuid) {
         Ok(key) => key,
@@ -61,7 +64,11 @@ pub struct Secret {
 
 #[post("/new_secret")]
 async fn new_secret(params: web::Form<Secret>) -> impl Responder {
-    let mut store = get_storage();
+    let mut store = match get_storage(){
+        Ok(store) => store,
+        Err(msg) => return HttpResponse::InternalServerError().body(format!("Error: {}", msg)),
+    };
+
     let key = Uuid::new_v4();
 
     if let Err(msg) = store.insert(key, &params.secret) {
@@ -84,14 +91,12 @@ async fn new_secret(params: web::Form<Secret>) -> impl Responder {
     }
 }
 
-fn get_storage() -> ValueRepo<Uuid, DirectoryStore> {
+fn get_storage() -> Result<ValueRepo<Uuid, DirectoryStore>, acid_store::Error> {
     let mut path = PathBuf::new();
     path.push("store");
 
-    let store = DirectoryStore::new(path).unwrap();
-    OpenOptions::new(store)
-        .create::<ValueRepo<Uuid, _>>()
-        .unwrap()
+    let store = DirectoryStore::new(path)?;
+    OpenOptions::new(store).create::<ValueRepo<Uuid, _>>()
 }
 
 #[actix_web::main]
