@@ -1,11 +1,10 @@
-use std::{path::PathBuf, str::FromStr};
+use std::{ops::Add, path::PathBuf, str::FromStr};
 
-use actix_web::{get, middleware::Logger, post, web, App, HttpResponse, HttpServer, Responder};
+use actix_web::{App, FromRequest, HttpResponse, HttpServer, Responder, get, middleware::Logger, post, web};
 use askama::Template;
 use serde::{Deserialize, Serialize};
 use acid_store::{store::DirectoryStore, uuid::Uuid};
 use acid_store::repo::{OpenOptions, value::ValueRepo};
-use acid_store::uuid;
 
 #[derive(Template)]
 #[template(path = "index.html", escape = "none")]
@@ -31,18 +30,21 @@ async fn index() -> impl Responder {
 async fn get_secret(web::Path(uuid): web::Path<String>) -> impl Responder {
     let mut store = get_storage();
 
-    // for key in store.keys(){
-    //     let val: String = store.get(&key).unwrap();
-    //     println!("Key: {} Value: {}", key, val);
-    // }
+    let key = match Uuid::from_str(&uuid){
+        Ok(key) => key,
+        Err(msg) => return HttpResponse::InternalServerError().body(format!("Error: {}", msg)),
+    };
 
-    let key = Uuid::from_str(&uuid).unwrap();
-
-    let secret: String = store.get(&key).unwrap();
+    let secret: String = match store.get(&key){
+        Ok(secret) => secret,
+        Err(msg) => return HttpResponse::NotFound().body(format!("Error: {}", msg)),
+    };
 
     store.remove(&key);
 
-    let _res = store.commit();
+    if let Err(msg) = store.commit(){
+        return  HttpResponse::InternalServerError().body(format!("Error: {}", msg));
+    }
 
     HttpResponse::Ok().content_type("text/html; charset=utf-8").body(secret)
 }
@@ -54,24 +56,23 @@ pub struct Secret {
 
 #[post("/new_secret")]
 async fn new_secret(params: web::Form<Secret>) -> impl Responder {
-    println!("{:?}", params);
-
     let mut store = get_storage();
-
-
     let key = Uuid::new_v4();
 
-    let res = store.insert(key, &params.secret);
-
-    println!("{:?}", res);
-
-    for key in store.keys(){
-        println!("{}", key);
+    if let Err(msg) = store.insert(key, &params.secret){
+        return  HttpResponse::InternalServerError().body(format!("Error: {}", msg));
     }
 
-    let _res = store.commit();
+    if let Err(msg) = store.commit(){
+        return  HttpResponse::InternalServerError().body(format!("Error: {}", msg));
+    }
 
-    HttpResponse::Ok().content_type("text/html; charset=utf-8").body(key.to_string())
+    if let Ok(mut base_url) = std::env::var("BASE_URL"){
+        base_url = base_url.add("/").add(&key.to_string());
+        HttpResponse::Ok().content_type("text/html; charset=utf-8").body(base_url)
+    }else{
+        HttpResponse::Ok().content_type("text/html; charset=utf-8").body(key.to_string())
+    }
 }
 
 fn get_storage() -> ValueRepo<Uuid, DirectoryStore>{
@@ -84,6 +85,7 @@ fn get_storage() -> ValueRepo<Uuid, DirectoryStore>{
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+    std::env::set_var("BASE_URL", "localhost:8080");
     std::env::set_var("RUST_LOG", "actix_web=info");
     env_logger::init();
 
