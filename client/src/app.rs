@@ -16,6 +16,17 @@ pub struct App {
     secret: String,
     tasks: Vec<FetchTask>,
     base_url: String,
+    uuid: Option<String>,
+}
+
+impl App{
+    fn url(&self) -> String{
+        if let Some(uuid) = &self.uuid{
+            format!("{}/{}", self.base_url, uuid)
+        }else{
+            format!("")
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -31,7 +42,7 @@ pub struct CreateSecretRequest {
 pub enum Msg {
     CreateSecret,
     UpdateSecret(String),
-    UrlCreated(String),
+    Uuid(String),
     Error,
 }
 
@@ -44,7 +55,8 @@ impl Component for App {
             link,
             secret: "".to_string(),
             tasks: vec![],
-            base_url: "http://localhost:8000".to_string(),
+            base_url: "http://localhost:8080".to_string(),
+            uuid: None,
         }
     }
 
@@ -65,7 +77,7 @@ impl Component for App {
                 let res_cb = self.link.callback(
                     |response: Response<Json<Result<CreateSecretResponse, Error>>>| {
                         if let (_meta, Json(Ok(res))) = response.into_parts() {
-                            Msg::UrlCreated(res.uuid)
+                            Msg::Uuid(res.uuid)
                         } else {
                             Msg::Error
                         }
@@ -79,8 +91,11 @@ impl Component for App {
             Msg::UpdateSecret(secret) => {
                 self.secret = secret;
             }
-            Msg::UrlCreated(url) => ConsoleService::info(&format!("url: {:?}", url)),
-            Msg::Error => {}
+            Msg::Uuid(uuid) => {
+                ConsoleService::info(&format!("uuid: {:?}", uuid));
+                self.uuid = Some(uuid);
+            },
+            Msg::Error => {ConsoleService::info("Something went wrong...")}
         }
         true
     }
@@ -100,11 +115,13 @@ impl Component for App {
                 <h1>{ "Create new secret" }</h1>
                 <br/>
                 <form action="/new_secret" method="post">
-                    <label for="secret">{ "Secret:" }</label>
                     <textarea id="secret" name="secret" rows="4" cols="50" oninput=update_secret value=&self.secret></textarea>
                     <br/>
                     <br/>
                 </form>
+                <input type="text" value=&self.url() />
+                <br/>
+                <br/>
                 <button onclick=create_secret>{ "Submit" }</button>
             </>
         }
