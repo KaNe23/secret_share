@@ -15,6 +15,7 @@ pub struct App {
     link: ComponentLink<Self>,
     secret: String,
     tasks: Vec<FetchTask>,
+    base_url: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -43,6 +44,7 @@ impl Component for App {
             link,
             secret: "".to_string(),
             tasks: vec![],
+            base_url: "http://localhost:8000".to_string(),
         }
     }
 
