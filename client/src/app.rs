@@ -2,7 +2,14 @@ use anyhow::Error;
 
 use serde::{Deserialize, Serialize};
 
-use yew::{format::{Json, Nothing}, prelude::*, services::{ConsoleService, FetchService, fetch::{FetchTask, Request, Response}}};
+use yew::{
+    format::Json,
+    prelude::*,
+    services::{
+        fetch::{FetchTask, Request, Response},
+        ConsoleService, FetchService,
+    },
+};
 
 pub struct App {
     link: ComponentLink<Self>,
@@ -24,6 +31,7 @@ pub enum Msg {
     CreateSecret,
     UpdateSecret(String),
     UrlCreated(String),
+    Error,
 }
 
 impl Component for App {
@@ -48,40 +56,29 @@ impl Component for App {
                 };
 
                 let post_request = Request::post("/new_secret")
-                .header("Content-Type", "application/json")
-                .body(Json(&body))
-                .unwrap();
-
-                // ConsoleService::info(&format!("Res: {}", res.body()));
-                // let res_cb = self.link.callback(|response: Response<Result<String, dyn Error>>|{
-                //         if let (meta, Ok(response)) = response.into_parts(){
-
-                //         }
-                //         // Msg::UrlCreated("".to_string())
-                //     }
-                // );
+                    .header("Content-Type", "application/json")
+                    .body(Json(&body))
+                    .unwrap();
 
                 let res_cb = self.link.callback(
                     |response: Response<Json<Result<CreateSecretResponse, Error>>>| {
-                        if let (meta, res) = response.into_parts() {
-                            ConsoleService::info(&format!("Meta: {:?}", meta));
-                            ConsoleService::info(&format!("UUID: {:?}", res));
-                        }else{
-                            // error handling
+                        if let (_meta, Json(Ok(res))) = response.into_parts() {
+                            Msg::UrlCreated(res.uuid)
+                        } else {
+                            Msg::Error
                         }
-
-                        Msg::UrlCreated("".to_string())
                     },
                 );
 
                 let task = FetchService::fetch(post_request, res_cb).unwrap();
+
                 self.tasks.push(task);
             }
             Msg::UpdateSecret(secret) => {
-                ConsoleService::info(&format!("Update: {:?}", secret));
                 self.secret = secret;
             }
             Msg::UrlCreated(url) => ConsoleService::info(&format!("url: {:?}", url)),
+            Msg::Error => {}
         }
         true
     }
