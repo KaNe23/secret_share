@@ -1,25 +1,40 @@
 use acid_store::repo::{value::ValueRepo, OpenOptions};
 use acid_store::{store::DirectoryStore, uuid::Uuid};
 use actix_files as fs;
-use actix_web::{App, FromRequest, HttpMessage, HttpResponse, HttpServer, Responder, get, middleware::Logger, post, web::{self}};
+use actix_web::{
+    get,
+    middleware::Logger,
+    post,
+    web::{self},
+    App, HttpResponse, HttpServer, Responder,
+};
 use askama::Template;
 use serde::{Deserialize, Serialize};
-use std::{ops::Add, path::PathBuf, str::FromStr};
+use std::{path::PathBuf, str::FromStr};
 
 #[derive(Template)]
 #[template(path = "index.html", escape = "none")]
 struct IndexTemplate {}
 
-#[get("/")]
-async fn index() -> impl Responder {
-    let index = IndexTemplate {};
-    let body = index.render().unwrap();
+#[get("/{uuid}")]
+async fn index_uuid(web::Path(_uuid): web::Path<String>) -> impl Responder {
+    let index_page = IndexTemplate {};
+    let body = index_page.render().unwrap();
     HttpResponse::Ok()
         .content_type("text/html; charset=utf-8")
         .body(body)
 }
 
-#[get("/{uuid}")]
+#[get("/")]
+async fn index() -> impl Responder {
+    let index_page = IndexTemplate {};
+    let body = index_page.render().unwrap();
+    HttpResponse::Ok()
+        .content_type("text/html; charset=utf-8")
+        .body(body)
+}
+
+#[get("/get_secret/{uuid}")]
 async fn get_secret(web::Path(uuid): web::Path<String>) -> impl Responder {
     let mut store = match get_storage() {
         Ok(store) => store,
@@ -76,9 +91,9 @@ async fn new_secret(params: web::Json<Secret>) -> impl Responder {
     // if let Ok(mut base_url) = std::env::var("BASE_URL") {
     //     base_url = base_url.add("/").add(&key.to_string());
     HttpResponse::Ok().json(response)
-        // HttpResponse::Ok()
-        //     .content_type("text/html; charset=utf-8")
-        //     .body(base_url)
+    // HttpResponse::Ok()
+    //     .content_type("text/html; charset=utf-8")
+    //     .body(base_url)
     // } else {
     //     HttpResponse::Ok()
     //         .content_type("text/html; charset=utf-8")
@@ -104,6 +119,7 @@ async fn main() -> std::io::Result<()> {
         App::new()
             .wrap(Logger::default())
             .service(index)
+            .service(index_uuid)
             .service(new_secret)
             .service(get_secret)
             .service(fs::Files::new("/pkg", "client/pkg").show_files_listing())
