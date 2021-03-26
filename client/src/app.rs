@@ -3,13 +3,13 @@ use magic_crypt::{new_magic_crypt, MagicCryptTrait};
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use serde::{Deserialize, Serialize};
-use web_sys::{Document, Url};
+use web_sys::{Document, HtmlButtonElement, HtmlElement, Url};
 use yew::{
     format::{Json, Nothing},
     prelude::*,
     services::{
         fetch::{FetchTask, Request, Response},
-        ConsoleService, FetchService,
+        FetchService,
     },
 };
 
@@ -22,6 +22,8 @@ pub struct App {
     encrypt_key: String,
     mode: Mode,
     error_msg: Option<String>,
+    button: NodeRef,
+    result_field: NodeRef,
 }
 
 enum Mode {
@@ -131,6 +133,16 @@ impl Component for App {
             encrypt_key,
             mode,
             error_msg: None,
+            button: NodeRef::default(),
+            result_field: NodeRef::default(),
+        }
+    }
+
+    fn rendered(&mut self, first_render: bool) {
+        if first_render {
+            if let Some(result_field) = self.result_field.cast::<HtmlElement>() {
+                result_field.set_hidden(true);
+            }
         }
     }
 
@@ -160,13 +172,19 @@ impl Component for App {
 
                 let task = FetchService::fetch(post_request, res_cb).unwrap();
 
+                let button = self.button.cast::<HtmlButtonElement>().unwrap();
+                button.set_hidden(true);
+
                 self.tasks.push(task);
             }
             Msg::UpdateSecret(secret) => {
                 self.secret = secret;
             }
             Msg::Uuid(uuid) => {
-                ConsoleService::info(&format!("uuid: {:?}", uuid));
+                // ConsoleService::info(&format!("uuid: {:?}", uuid));
+                let result_field = self.result_field.cast::<HtmlElement>().unwrap();
+                result_field.set_hidden(false);
+
                 self.uuid = Some(uuid);
             }
             Msg::Error(error) => match error {
@@ -202,6 +220,8 @@ impl Component for App {
                 let mc = new_magic_crypt!(&self.encrypt_key, 256, "AES");
                 if let Ok(secret) = mc.decrypt_base64_to_string(encrypted_secret) {
                     self.secret = secret;
+                    let button = self.button.cast::<HtmlElement>().unwrap();
+                    button.set_hidden(true);
                 } else {
                     self.update(Msg::Error(AppError::DecryptError));
                 };
@@ -223,33 +243,31 @@ impl Component for App {
 
         match self.mode {
             Mode::Get => html! {
-                <>
-                    <h1>{ "Show secret (Can only be done ONCE!)" }</h1>
-                    <br/>
-                    <form action="/new_secret" method="post">
-                        <textarea id="secret" name="secret" rows="4" cols="50" oninput=update_secret value=&self.secret></textarea>
-                    </form>
+                <div class="c">
+                    <h1>{ "View secret" }</h1>
+                    <h4>{ "This can only be done ONCE!" }</h4>
                     <br/>
                     <p>{ &self.show_error() }</p>
+                    <textarea class="card w-100" id="secret" name="secret" rows="4" cols="50" value=&self.secret></textarea>
+                    <hr/>
                     <br/>
-                    <button onclick=show_secret>{ "RevealSecret" }</button>
-                </>
+                    <button class="btn primary" ref=self.button.clone() onclick=show_secret>{ "Reveal" }</button>
+                </div>
             },
             Mode::New => html! {
-                <>
+                <div class="c">
                     <h1>{ "Create new secret" }</h1>
                     <br/>
-                    <form action="/new_secret" method="post">
-                        <textarea id="secret" name="secret" rows="4" cols="50" oninput=update_secret value=&self.secret></textarea>
-                    </form>
-                    <br/>
-                    <br/>
-                    <button onclick=create_secret>{ "Submit" }</button>
-                    <br/>
                     <p>{ &self.show_error() }</p>
+                    <form action="/new_secret" method="post">
+                    <textarea class="card w-100" id="secret" name="secret" rows="4" cols="50" oninput=update_secret value=&self.secret></textarea>
+                    </form>
+                    <hr/>
+                    <pre ref=self.result_field.clone() >{ &self.url() }</pre>
+                    <button class="btn primary" ref=self.button.clone() onclick=create_secret>{ "Create" }</button>
                     <br/>
-                    <p>{ &self.url() }</p>
-                </>
+                    <br/>
+                </div>
             },
         }
     }
