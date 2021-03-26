@@ -686,6 +686,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "getrandom 0.2.2",
+ "if_chain",
+ "js-sys",
  "magic-crypt",
  "rand 0.8.3",
  "serde",
@@ -1275,6 +1277,12 @@ dependencies = [
  "unicode-bidi",
  "unicode-normalization",
 ]
+
+[[package]]
+name = "if_chain"
+version = "1.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1f7280c75fb2e2fc47080ec80ccc481376923acb04501957fc38f935c3de5088"
 
 [[package]]
 name = "indexmap"
@@ -1953,6 +1961,7 @@ dependencies = [
  "client",
  "env_logger",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2545,6 +2554,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fe8f61dba8e5d645a4d8132dc7a0a66861ed5e1045d2c0ed940fab33bac0fbe"
 dependencies = [
  "cfg-if 1.0.0",
+ "serde",
+ "serde_json",
  "wasm-bindgen-macro",
 ]
 

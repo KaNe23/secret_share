@@ -1,15 +1,16 @@
 use anyhow::Error;
+use if_chain::if_chain;
 use magic_crypt::{new_magic_crypt, MagicCryptTrait};
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use serde::{Deserialize, Serialize};
-use web_sys::{Document, HtmlButtonElement, HtmlElement, Url};
+use web_sys::{Document, HtmlButtonElement, HtmlElement, Url, Window};
 use yew::{
     format::{Json, Nothing},
     prelude::*,
     services::{
         fetch::{FetchTask, Request, Response},
-        FetchService,
+        ConsoleService, FetchService,
     },
 };
 
@@ -29,6 +30,7 @@ pub struct App {
 enum Mode {
     New,
     Get,
+    Error,
 }
 
 impl App {
@@ -48,9 +50,12 @@ impl App {
         }
     }
 
+    fn get_window() -> Option<Window> {
+        web_sys::window()
+    }
+
     fn get_document() -> Option<Document> {
-        let window = web_sys::window()?;
-        window.document()
+        App::get_window()?.document()
     }
 
     // this is madness...
@@ -99,13 +104,28 @@ pub enum AppError {
     DecryptError,
 }
 
+#[derive(Serialize, Deserialize, Debug)]
+struct Config {
+    error: Option<String>,
+    base_url: String,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            error: None,
+            base_url: "http://localhost:8080".to_string(),
+        }
+    }
+}
+
 impl Component for App {
     type Message = Msg;
     type Properties = ();
 
     fn create(_: Self::Properties, link: ComponentLink<Self>) -> Self {
         // get the uuid and encryption key from the URL if present
-        let (uuid, encrypt_key, mode) = if let Some((uuid, hash)) = App::get_uuid_and_hash() {
+        let (uuid, encrypt_key, mut mode) = if let Some((uuid, hash)) = App::get_uuid_and_hash() {
             // trim the leading / and #
             (
                 Some((&uuid[1..]).to_string()),
@@ -124,15 +144,30 @@ impl Component for App {
             (None, key, Mode::New)
         };
 
+        let config = if_chain! {
+            if let Some(window) = App::get_window();
+            if let Some(config) = window.get("config");
+            if let Ok(config) = config.into_serde::<Config>();
+            then {
+                config
+            }else {
+                Config::default()
+            }
+        };
+
+        if config.error.is_some() {
+            mode = Mode::Error;
+        };
+
         Self {
             link,
             secret: "".to_string(),
             tasks: vec![],
-            base_url: "http://localhost:8080".to_string(),
+            base_url: config.base_url,
             uuid,
             encrypt_key,
             mode,
-            error_msg: None,
+            error_msg: config.error,
             button: NodeRef::default(),
             result_field: NodeRef::default(),
         }
@@ -242,6 +277,12 @@ impl Component for App {
         let show_secret = self.link.callback(|_| Msg::GetSecret);
 
         match self.mode {
+            Mode::Error => html! {
+                <div class="c">
+                    <h1>{ "Error" }</h1>
+                    <p>{ &self.show_error() }</p>
+                </div>
+            },
             Mode::Get => html! {
                 <div class="c">
                     <h1>{ "View secret" }</h1>

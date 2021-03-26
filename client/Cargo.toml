@@ -10,7 +10,7 @@ edition = "2018"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-wasm-bindgen = "^0.2"
+wasm-bindgen = {version = "^0.2", features = ["serde-serialize"]}
 yew = "0.17"
 serde = "1.0"
 anyhow = "1"
@@ -18,3 +18,5 @@ magic-crypt = "3.1"
 getrandom = { version = "0.2", features = ["js"] }
 rand = { version = "0.8" }
 web-sys = "0.3"
+js-sys = "0.3"
+if_chain = "1"
