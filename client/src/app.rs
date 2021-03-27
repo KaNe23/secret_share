@@ -4,9 +4,10 @@ use magic_crypt::{new_magic_crypt, MagicCryptTrait};
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use serde::{Deserialize, Serialize};
+use uuid::Uuid;
 use web_sys::{Document, HtmlButtonElement, HtmlElement, Url, Window};
 use yew::{
-    format::{Json, Nothing},
+    format::Json,
     prelude::*,
     services::{
         fetch::{FetchTask, Request, Response},
@@ -19,7 +20,7 @@ pub struct App {
     secret: String,
     tasks: Vec<FetchTask>,
     base_url: String,
-    uuid: Option<String>,
+    uuid: Option<Uuid>,
     encrypt_key: String,
     mode: Mode,
     error_msg: Option<String>,
@@ -59,34 +60,22 @@ impl App {
     }
 
     // this is madness...
-    fn get_uuid_and_hash() -> Option<(String, String)> {
-        if let Ok(url) = App::get_document()?.url() {
-            if let Ok(url) = Url::new(&url) {
-                let pathname: String = url.pathname();
-                let hash: String = url.hash();
-
-                if !pathname.is_empty() && !hash.is_empty() {
-                    Some((pathname, hash))
-                } else {
-                    None
-                }
-            } else {
+    fn get_uuid_and_hash() -> Option<(Uuid, String)> {
+        if_chain! {
+            if let Ok(url) = App::get_document()?.url();
+            if let Ok(url) = Url::new(&url);
+            let pathname: String = url.pathname();
+            let hash: String = url.hash();
+            if !pathname.is_empty() && !hash.is_empty();
+            // pathname contains / as first char
+            if let Ok(uuid) = Uuid::parse_str(&pathname[1..]);
+            then {
+                Some((uuid, hash))
+            }else {
                 None
             }
-        } else {
-            None
         }
     }
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct CreateSecretResponse {
-    pub uuid: String,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct CreateSecretRequest {
-    pub secret: String,
 }
 
 pub enum Msg {
@@ -94,11 +83,13 @@ pub enum Msg {
     UpdateSecret(String),
     GetSecret,
     RevealSecret(String),
-    Uuid(String),
+    Uuid(Uuid),
     Error(AppError),
 }
 
 pub enum AppError {
+    FailedToFetchSecret,
+    FailedToPostSecret,
     CreateSecretError,
     GetSecretError,
     DecryptError,
@@ -114,7 +105,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             error: None,
-            base_url: "http://localhost:8080".to_string(),
+            base_url: "".to_string(),
         }
     }
 }
@@ -127,11 +118,7 @@ impl Component for App {
         // get the uuid and encryption key from the URL if present
         let (uuid, encrypt_key, mut mode) = if let Some((uuid, hash)) = App::get_uuid_and_hash() {
             // trim the leading / and #
-            (
-                Some((&uuid[1..]).to_string()),
-                (&hash[1..]).to_string(),
-                Mode::Get,
-            )
+            (Some(uuid), (&hash[1..]).to_string(), Mode::Get)
         } else {
             let mut rng = thread_rng();
 
@@ -186,8 +173,9 @@ impl Component for App {
             Msg::CreateSecret => {
                 let mc = new_magic_crypt!(&self.encrypt_key, 256, "AES");
 
-                let body = CreateSecretRequest {
-                    secret: mc.encrypt_str_to_base64(self.secret.clone()),
+                let body = shared::Request::CreateSecret {
+                    encrypted_secret: mc.encrypt_str_to_base64(self.secret.clone()),
+                    password: None,
                 };
 
                 let post_request = Request::post("/new_secret")
@@ -196,21 +184,27 @@ impl Component for App {
                     .unwrap();
 
                 let res_cb = self.link.callback(
-                    |response: Response<Json<Result<CreateSecretResponse, Error>>>| {
-                        if let (_meta, Json(Ok(res))) = response.into_parts() {
-                            Msg::Uuid(res.uuid)
+                    |response: Response<Json<Result<shared::Response, Error>>>| {
+                        if let (_meta, Json(Ok(shared::Response::Uuid(uuid)))) =
+                            response.into_parts()
+                        {
+                            Msg::Uuid(uuid)
                         } else {
                             Msg::Error(AppError::CreateSecretError)
                         }
                     },
                 );
 
-                let task = FetchService::fetch(post_request, res_cb).unwrap();
+                let task = FetchService::fetch(post_request, res_cb);
+                if let Ok(task) = task{
+                    self.tasks.push(task);
+                }else{
+                    self.update(Msg::Error(AppError::FailedToPostSecret));
+                }
 
-                let button = self.button.cast::<HtmlButtonElement>().unwrap();
-                button.set_hidden(true);
-
-                self.tasks.push(task);
+                if let Some(button) = self.button.cast::<HtmlButtonElement>(){
+                    button.set_hidden(true);
+                }
             }
             Msg::UpdateSecret(secret) => {
                 self.secret = secret;
@@ -223,17 +217,19 @@ impl Component for App {
                 self.uuid = Some(uuid);
             }
             Msg::Error(error) => match error {
-                AppError::CreateSecretError => {
-                    self.error_msg = Some("Could not create secret.".into())
-                }
-                AppError::GetSecretError => self.error_msg = Some("Could not get secret".into()),
-                AppError::DecryptError => self.error_msg = Some("Could not decrypt secret.".into()),
+                AppError::CreateSecretError   => self.error_msg = Some("Could not create secret." .into()),
+                AppError::GetSecretError      => self.error_msg = Some("Could not get secret"     .into()),
+                AppError::DecryptError        => self.error_msg = Some("Could not decrypt secret.".into()),
+                AppError::FailedToFetchSecret => self.error_msg = Some("Failed to fetch secret."  .into()),
+                AppError::FailedToPostSecret  => self.error_msg = Some("Failed to post secret."   .into())
             },
             Msg::GetSecret => {
                 if let Some(uuid) = &self.uuid {
-                    let get_request = Request::get(format!("/get_secret/{}", uuid))
+                    let body = shared::Request::GetSecret { uuid: *uuid };
+
+                    let post_request = Request::post("/get_secret")
                         .header("Content-Type", "application/json")
-                        .body(Nothing)
+                        .body(Json(&body))
                         .unwrap();
 
                     let request_callback =
@@ -246,9 +242,13 @@ impl Component for App {
                                 }
                             });
 
-                    let task = FetchService::fetch(get_request, request_callback).unwrap();
+                    let task = FetchService::fetch(post_request, request_callback);
+                    if let Ok(task) = task{
+                        self.tasks.push(task);
+                    }else{
+                        self.update(Msg::Error(AppError::FailedToFetchSecret));
+                    }
 
-                    self.tasks.push(task);
                 }
             }
             Msg::RevealSecret(encrypted_secret) => {
@@ -298,10 +298,10 @@ impl Component for App {
             Mode::New => html! {
                 <div class="c">
                     <h1>{ "Create new secret" }</h1>
-                    <br/>
                     <p>{ &self.show_error() }</p>
                     <form action="/new_secret" method="post">
-                    <textarea class="card w-100" id="secret" name="secret" rows="4" cols="50" oninput=update_secret value=&self.secret></textarea>
+                    // TODO: config for max size, check on client and server side
+                    <textarea maxlength="10000" class="card w-100" id="secret" name="secret" rows="4" cols="50" oninput=update_secret value=&self.secret></textarea>
                     </form>
                     <hr/>
                     <pre ref=self.result_field.clone() >{ &self.url() }</pre>
