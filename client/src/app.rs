@@ -5,6 +5,7 @@ use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use wasm_bindgen_futures::spawn_local;
 use web_sys::{Document, HtmlButtonElement, HtmlElement, Url, Window};
 use yew::{
     format::Json,
@@ -17,15 +18,20 @@ use yew::{
 
 pub struct App {
     link: ComponentLink<Self>,
-    secret: String,
-    tasks: Vec<FetchTask>,
     base_url: String,
+
+    secret: String,
     uuid: Option<Uuid>,
     encrypt_key: String,
-    mode: Mode,
+
     error_msg: Option<String>,
+
+    mode: Mode,
+    tasks: Vec<FetchTask>,
+
     button: NodeRef,
     result_field: NodeRef,
+    copy_button: NodeRef,
 }
 
 enum Mode {
@@ -59,7 +65,6 @@ impl App {
         App::get_window()?.document()
     }
 
-    // this is madness...
     fn get_uuid_and_hash() -> Option<(Uuid, String)> {
         if_chain! {
             if let Ok(url) = App::get_document()?.url();
@@ -70,7 +75,8 @@ impl App {
             // pathname contains / as first char
             if let Ok(uuid) = Uuid::parse_str(&pathname[1..]);
             then {
-                Some((uuid, hash))
+                // hash contains # as first char
+                Some((uuid, hash[1..].to_string()))
             }else {
                 None
             }
@@ -80,11 +86,12 @@ impl App {
 
 pub enum Msg {
     CreateSecret,
-    UpdateSecret(String),
     GetSecret,
+    UpdateSecret(String),
     RevealSecret(String),
     Uuid(Uuid),
     Error(AppError),
+    CopyToClipboard,
 }
 
 pub enum AppError {
@@ -117,8 +124,7 @@ impl Component for App {
     fn create(_: Self::Properties, link: ComponentLink<Self>) -> Self {
         // get the uuid and encryption key from the URL if present
         let (uuid, encrypt_key, mut mode) = if let Some((uuid, hash)) = App::get_uuid_and_hash() {
-            // trim the leading / and #
-            (Some(uuid), (&hash[1..]).to_string(), Mode::Get)
+            (Some(uuid), hash, Mode::Get)
         } else {
             let mut rng = thread_rng();
 
@@ -157,6 +163,7 @@ impl Component for App {
             error_msg: config.error,
             button: NodeRef::default(),
             result_field: NodeRef::default(),
+            copy_button: NodeRef::default(),
         }
     }
 
@@ -261,6 +268,24 @@ impl Component for App {
                     self.update(Msg::Error(AppError::DecryptError));
                 };
             }
+            Msg::CopyToClipboard => {
+                if let Some(window) = App::get_window(){
+                    let clipboard = window.navigator().clipboard();
+
+                    let promise = web_sys::Clipboard::write_text(&clipboard, &self.url());
+                    let future = wasm_bindgen_futures::JsFuture::from(promise);
+
+                    if let Some(button) = self.copy_button.cast::<HtmlElement>(){
+                        spawn_local(async move{
+                            if future.await.is_ok(){
+                                button.set_inner_text("Success!");
+                            }else{
+                                button.set_inner_text("Failure! :(");
+                            }
+                        })
+                    }
+                }
+            }
         }
         true
     }
@@ -275,6 +300,7 @@ impl Component for App {
             .callback(|e: InputData| Msg::UpdateSecret(e.value));
         let create_secret = self.link.callback(|_| Msg::CreateSecret);
         let show_secret = self.link.callback(|_| Msg::GetSecret);
+        let copy_to_clipboard = self.link.callback(|_| Msg::CopyToClipboard);
 
         match self.mode {
             Mode::Error => html! {
@@ -304,7 +330,16 @@ impl Component for App {
                     <textarea maxlength="10000" class="card w-100" id="secret" name="secret" rows="4" cols="50" oninput=update_secret value=&self.secret></textarea>
                     </form>
                     <hr/>
-                    <pre ref=self.result_field.clone() >{ &self.url() }</pre>
+                    <div ref=self.result_field.clone()>
+                        <div class="row">
+                            <div class="10 col">
+                                <pre>{ &self.url() }</pre>
+                            </div>
+                            <div class="3 col">
+                                <button ref=self.copy_button.clone() onclick=copy_to_clipboard class="card btn" style="vertical-align: text-bottom; width: 100%">{ "Copy to Clipboard." }</button>
+                            </div>
+                        </div>
+                    </div>
                     <button class="btn primary" ref=self.button.clone() onclick=create_secret>{ "Create" }</button>
                     <br/>
                     <br/>
