@@ -203,13 +203,13 @@ impl Component for App {
                 );
 
                 let task = FetchService::fetch(post_request, res_cb);
-                if let Ok(task) = task{
+                if let Ok(task) = task {
                     self.tasks.push(task);
-                }else{
+                } else {
                     self.update(Msg::Error(AppError::FailedToPostSecret));
                 }
 
-                if let Some(button) = self.button.cast::<HtmlButtonElement>(){
+                if let Some(button) = self.button.cast::<HtmlButtonElement>() {
                     button.set_hidden(true);
                 }
             }
@@ -224,11 +224,17 @@ impl Component for App {
                 self.uuid = Some(uuid);
             }
             Msg::Error(error) => match error {
-                AppError::CreateSecretError   => self.error_msg = Some("Could not create secret." .into()),
-                AppError::GetSecretError      => self.error_msg = Some("Could not get secret"     .into()),
-                AppError::DecryptError        => self.error_msg = Some("Could not decrypt secret.".into()),
-                AppError::FailedToFetchSecret => self.error_msg = Some("Failed to fetch secret."  .into()),
-                AppError::FailedToPostSecret  => self.error_msg = Some("Failed to post secret."   .into())
+                AppError::CreateSecretError => {
+                    self.error_msg = Some("Could not create secret.".into())
+                }
+                AppError::GetSecretError => self.error_msg = Some("Could not get secret".into()),
+                AppError::DecryptError => self.error_msg = Some("Could not decrypt secret.".into()),
+                AppError::FailedToFetchSecret => {
+                    self.error_msg = Some("Failed to fetch secret.".into())
+                }
+                AppError::FailedToPostSecret => {
+                    self.error_msg = Some("Failed to post secret.".into())
+                }
             },
             Msg::GetSecret => {
                 if let Some(uuid) = &self.uuid {
@@ -250,12 +256,11 @@ impl Component for App {
                             });
 
                     let task = FetchService::fetch(post_request, request_callback);
-                    if let Ok(task) = task{
+                    if let Ok(task) = task {
                         self.tasks.push(task);
-                    }else{
+                    } else {
                         self.update(Msg::Error(AppError::FailedToFetchSecret));
                     }
-
                 }
             }
             Msg::RevealSecret(encrypted_secret) => {
@@ -269,17 +274,17 @@ impl Component for App {
                 };
             }
             Msg::CopyToClipboard => {
-                if let Some(window) = App::get_window(){
+                if let Some(window) = App::get_window() {
                     let clipboard = window.navigator().clipboard();
 
                     let promise = web_sys::Clipboard::write_text(&clipboard, &self.url());
                     let future = wasm_bindgen_futures::JsFuture::from(promise);
 
-                    if let Some(button) = self.copy_button.cast::<HtmlElement>(){
-                        spawn_local(async move{
-                            if future.await.is_ok(){
+                    if let Some(button) = self.copy_button.cast::<HtmlElement>() {
+                        spawn_local(async move {
+                            if future.await.is_ok() {
                                 button.set_inner_text("Success!");
-                            }else{
+                            } else {
                                 button.set_inner_text("Failure! :(");
                             }
                         })

@@ -94,9 +94,9 @@ async fn index() -> impl Responder {
 
 #[post("/get_secret")]
 async fn get_secret(params: web::Json<shared::Request>) -> impl Responder {
-    let key = if let Json(shared::Request::GetSecret{uuid}) = params{
+    let key = if let Json(shared::Request::GetSecret { uuid }) = params {
         uuid
-    }else{
+    } else {
         return HttpResponse::BadRequest().finish();
     };
 
