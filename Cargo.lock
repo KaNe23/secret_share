@@ -1987,8 +1987,8 @@ dependencies = [
  "askama",
  "chrono",
  "env_logger",
+ "lazy_static",
  "serde",
- "serde_json",
  "shared",
 ]
 
@@ -2112,6 +2112,7 @@ name = "shared"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
  "uuid",
 ]
 

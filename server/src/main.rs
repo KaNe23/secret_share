@@ -13,44 +13,30 @@ use actix_web::{
 };
 use askama::Template;
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
-use serde::{Deserialize, Serialize};
-use std::{fmt::Display, path::PathBuf, str::FromStr};
+use lazy_static::lazy_static;
+use std::{path::PathBuf, str::FromStr};
+
+lazy_static! {
+    static ref BASE_URL: String = if let Ok(base_url) = std::env::var("BASE_URL") {
+        base_url
+    } else {
+        "http://localhost:8080".to_string()
+    };
+    static ref KEY_LENGTH: i32 = if let Ok(key_len) = std::env::var("KEY_LENGTH") {
+        if let Ok(key_len) = i32::from_str(&key_len) {
+            key_len
+        } else {
+            16
+        }
+    } else {
+        16
+    };
+}
 
 #[derive(Template)]
 #[template(path = "index.html", escape = "none")]
 struct IndexTemplate {
-    json_config: Json<Config>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct Config {
-    error: Option<String>,
-    base_url: String,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        let base_url = match std::env::var("BASE_URL") {
-            Ok(val) => val,
-            Err(_e) => "https://set_base_url_env_var.example.com".to_string(),
-        };
-
-        Config {
-            error: None,
-            base_url,
-        }
-    }
-}
-
-impl Display for Config {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match serde_json::to_string(&self) {
-            Ok(json) => {
-                write!(f, "{}", &json)
-            }
-            Err(_err) => write!(f, "{{}}"),
-        }
-    }
+    json_config: Json<shared::Config>,
 }
 
 #[get("/{uuid}")]
@@ -75,9 +61,10 @@ async fn index_uuid(web::Path(uuid): web::Path<String>) -> impl Responder {
 
 fn render_index_page(error: Option<String>) -> impl Responder {
     let index_page = IndexTemplate {
-        json_config: Json(Config {
+        json_config: Json(shared::Config {
             error,
-            ..Config::default()
+            base_url: BASE_URL.clone(),
+            key_length: *KEY_LENGTH
         }),
     };
 

@@ -1,9 +1,8 @@
-use anyhow::Error;
+use anyhow::{Error, anyhow};
 use if_chain::if_chain;
 use magic_crypt::{new_magic_crypt, MagicCryptTrait};
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
-use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{Document, HtmlButtonElement, HtmlElement, Url, Window};
@@ -65,19 +64,29 @@ impl App {
         App::get_window()?.document()
     }
 
-    fn get_uuid_and_hash() -> Option<(Uuid, String)> {
+    fn get_uuid_and_hash(key_len: i32) -> Option<Result<(Uuid, String), Error>> {
         if_chain! {
-            if let Ok(url) = App::get_document()?.url();
+            if let Some(document) = App::get_document();
+            if let Ok(url) = document.url();
             if let Ok(url) = Url::new(&url);
+
             let pathname: String = url.pathname();
             let hash: String = url.hash();
-            if !pathname.is_empty() && !hash.is_empty();
+
+            if !pathname.is_empty();
             // pathname contains / as first char
             if let Ok(uuid) = Uuid::parse_str(&pathname[1..]);
             then {
-                // hash contains # as first char
-                Some((uuid, hash[1..].to_string()))
-            }else {
+                if hash.is_empty() {
+                    Some(Err(anyhow!("Key missing, will not be able to encrypt secret!")))
+                } else if (hash.len() - 1) != key_len as usize{
+                    Some(Err(anyhow!("Invalid key length, will not be able to encrypt secret!")))
+                } else {
+                    // hash contains # as first char
+                    let hash = hash[1..].to_string();
+                    Some(Ok((uuid, hash)))
+                }
+            } else {
                 None
             }
         }
@@ -102,49 +111,43 @@ pub enum AppError {
     DecryptError,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-struct Config {
-    error: Option<String>,
-    base_url: String,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Config {
-            error: None,
-            base_url: "".to_string(),
-        }
-    }
-}
-
 impl Component for App {
     type Message = Msg;
     type Properties = ();
 
     fn create(_: Self::Properties, link: ComponentLink<Self>) -> Self {
-        // get the uuid and encryption key from the URL if present
-        let (uuid, encrypt_key, mut mode) = if let Some((uuid, hash)) = App::get_uuid_and_hash() {
-            (Some(uuid), hash, Mode::Get)
-        } else {
-            let mut rng = thread_rng();
-
-            let key: String = (&mut rng)
-                .sample_iter(Alphanumeric)
-                .take(16)
-                .map(char::from)
-                .collect();
-
-            (None, key, Mode::New)
-        };
-
-        let config = if_chain! {
+        let mut config = if_chain! {
             if let Some(window) = App::get_window();
             if let Some(config) = window.get("config");
-            if let Ok(config) = config.into_serde::<Config>();
+            if let Ok(config) = config.into_serde::<shared::Config>();
             then {
                 config
             }else {
-                Config::default()
+                shared::Config::default()
+            }
+        };
+
+        // get the uuid and encryption key from the URL if present
+        let result = App::get_uuid_and_hash(config.key_length);
+
+        let (uuid, encrypt_key, mut mode) = match result{
+            Some(Ok((uuid, hash))) => {
+                (Some(uuid), hash, Mode::Get)
+            },
+            Some(Err(err)) => {
+                config.error = Some(err.to_string());
+                (None, "".to_string(), Mode::Error)
+            }
+            None => {
+                let mut rng = thread_rng();
+
+                let key: String = (&mut rng)
+                    .sample_iter(Alphanumeric)
+                    .take(config.key_length as usize)
+                    .map(char::from)
+                    .collect();
+
+                (None, key, Mode::New)
             }
         };
 
