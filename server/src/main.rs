@@ -47,7 +47,7 @@ async fn index_uuid(web::Path(uuid): web::Path<String>) -> impl Responder {
         Ok(key) => key,
         Err(_msg) => {
             return render_index_page(
-                Some("Invalid secret key (UUID), likely an incomplete link/url.".to_string()),
+                "Invalid secret key (UUID), likely an incomplete link/url.".to_string(),
                 false,
             )
         }
@@ -56,32 +56,32 @@ async fn index_uuid(web::Path(uuid): web::Path<String>) -> impl Responder {
     match key_exists(key) {
         Ok(false) => {
             return render_index_page(
-                Some("Secret not found or already viewed.".to_string()),
+                "Secret not found or already viewed.".to_string(),
                 false,
             )
         }
-        Err(msg) => return render_index_page(Some(format!("Error: {}", msg)), false),
+        Err(msg) => return render_index_page(format!("Error: {}", msg), false),
         _ => {}
     }
 
     match find_entry(key) {
         Ok((_uuid, entry)) => {
             if entry.password.is_some() {
-                return render_index_page(None, true);
+                return render_index_page("".to_string(), true);
             } else {
-                return render_index_page(None, false);
+                return render_index_page("".to_string(), false);
             }
         }
         Err(msg) => {
             return render_index_page(
-                Some(format!("Secret found but could not be fetched: {}", msg)),
+                format!("Secret found but could not be fetched: {}", msg),
                 false,
             )
         }
     }
 }
 
-fn render_index_page(error: Option<String>, password_required: bool) -> impl Responder {
+fn render_index_page(error: String, password_required: bool) -> impl Responder {
     let index_page = IndexTemplate {
         json_config: Json(Config {
             error,
@@ -99,7 +99,7 @@ fn render_index_page(error: Option<String>, password_required: bool) -> impl Res
 
 #[get("/")]
 async fn index() -> impl Responder {
-    render_index_page(None, false)
+    render_index_page("".to_string(), false)
 }
 
 #[post("/get_secret")]

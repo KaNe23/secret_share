@@ -2,12 +2,6 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 use uuid::Uuid;
 
-// #[derive(Serialize, Deserialize)]
-// pub struct Password {
-//     salt: String,
-//     hash: String,
-// }
-
 #[derive(Serialize, Deserialize)]
 pub enum Request {
     CreateSecret {
@@ -29,7 +23,7 @@ pub enum Response {
 
 #[derive(Serialize, Deserialize)]
 pub struct Config {
-    pub error: Option<String>,
+    pub error: String,
     pub base_url: String,
     pub key_length: i32,
     pub password_required: bool,
@@ -38,7 +32,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            error: None,
+            error: "".to_string(),
             base_url: "".to_string(),
             key_length: 16,
             password_required: false,

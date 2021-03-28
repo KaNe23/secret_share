@@ -25,7 +25,7 @@ pub struct App {
     password: String,
     password_required: bool,
 
-    error_msg: Option<String>,
+    error_msg: String,
 
     mode: Mode,
     tasks: Vec<FetchTask>,
@@ -48,14 +48,6 @@ impl App {
             format!("{}/{}#{}", self.base_url, uuid, self.encrypt_key)
         } else {
             format!("")
-        }
-    }
-
-    fn show_error(&self) -> String {
-        if let Some(msg) = &self.error_msg {
-            msg.to_owned()
-        } else {
-            "".to_string()
         }
     }
 
@@ -138,7 +130,7 @@ impl Component for App {
         let (uuid, encrypt_key, mut mode) = match result {
             Some(Ok((uuid, hash))) => (Some(uuid), hash, Mode::Get),
             Some(Err(err)) => {
-                config.error = Some(err.to_string());
+                config.error = err.to_string();
                 (None, "".to_string(), Mode::Error)
             }
             None => {
@@ -154,7 +146,7 @@ impl Component for App {
             }
         };
 
-        if config.error.is_some() {
+        if !config.error.is_empty() {
             mode = Mode::Error;
         };
 
@@ -248,17 +240,17 @@ impl Component for App {
             }
             Msg::Error(error) => match error {
                 AppError::CreateSecretError => {
-                    self.error_msg = Some("Could not create secret.".into())
+                    self.error_msg = "Could not create secret.".into()
                 }
-                AppError::GetSecretError => self.error_msg = Some("Could not get secret".into()),
-                AppError::DecryptError => self.error_msg = Some("Could not decrypt secret.".into()),
+                AppError::GetSecretError => self.error_msg = "Could not get secret".into(),
+                AppError::DecryptError => self.error_msg = "Could not decrypt secret.".into(),
                 AppError::FailedToFetchSecret => {
-                    self.error_msg = Some("Failed to fetch secret.".into())
+                    self.error_msg = "Failed to fetch secret.".into()
                 }
                 AppError::FailedToPostSecret => {
-                    self.error_msg = Some("Failed to post secret.".into())
+                    self.error_msg = "Failed to post secret.".into()
                 }
-                AppError::ServerError(msg) => self.error_msg = Some(msg),
+                AppError::ServerError(msg) => self.error_msg = msg,
             },
             Msg::GetSecret => {
                 if let Some(uuid) = &self.uuid {
@@ -353,15 +345,15 @@ impl Component for App {
             Mode::Error => html! {
                 <div class="c">
                     <h1>{ "Error" }</h1>
-                    <p>{ &self.show_error() }</p>
+                    <p>{ &self.error_msg }</p>
                 </div>
             },
             Mode::Get => html! {
                 <div class="c">
                     <h1>{ "View secret" }</h1>
-                    <h4>{ "This can only be done ONCE!" }</h4>
+                    <h5>{ "This can only be done ONCE!" }</h5>
                     <br/>
-                    <p>{ &self.show_error() }</p>
+                    <p>{ &self.error_msg }</p>
                     <textarea class="card w-100" id="secret" name="secret" rows="4" cols="50" value=&self.secret></textarea>
                     <hr/>
                     <div class="row">
@@ -377,7 +369,7 @@ impl Component for App {
             Mode::New => html! {
                 <div class="c">
                     <h1>{ "Create new secret" }</h1>
-                    <p>{ &self.show_error() }</p>
+                    <p>{ &self.error_msg }</p>
                     // TODO: config for max size, check on client and server side
                     <textarea maxlength="10000" class="card w-100" id="secret" name="secret" rows="4" cols="50" oninput=update_secret value=&self.secret></textarea>
                     <input oninput=update_password value=&self.password class="card" type="password" name="password" placeholder="Optional password" />
