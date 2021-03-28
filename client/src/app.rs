@@ -1,4 +1,4 @@
-use anyhow::{Error, anyhow};
+use anyhow::{anyhow, Error};
 use if_chain::if_chain;
 use magic_crypt::{new_magic_crypt, MagicCryptTrait};
 use rand::distributions::Alphanumeric;
@@ -22,6 +22,8 @@ pub struct App {
     secret: String,
     uuid: Option<Uuid>,
     encrypt_key: String,
+    password: String,
+    password_required: bool,
 
     error_msg: Option<String>,
 
@@ -31,6 +33,7 @@ pub struct App {
     button: NodeRef,
     result_field: NodeRef,
     copy_button: NodeRef,
+    password_field: NodeRef,
 }
 
 enum Mode {
@@ -101,6 +104,7 @@ pub enum Msg {
     Uuid(Uuid),
     Error(AppError),
     CopyToClipboard,
+    UpdatePassword(String),
 }
 
 pub enum AppError {
@@ -109,6 +113,7 @@ pub enum AppError {
     CreateSecretError,
     GetSecretError,
     DecryptError,
+    ServerError(String),
 }
 
 impl Component for App {
@@ -130,10 +135,8 @@ impl Component for App {
         // get the uuid and encryption key from the URL if present
         let result = App::get_uuid_and_hash(config.key_length);
 
-        let (uuid, encrypt_key, mut mode) = match result{
-            Some(Ok((uuid, hash))) => {
-                (Some(uuid), hash, Mode::Get)
-            },
+        let (uuid, encrypt_key, mut mode) = match result {
+            Some(Ok((uuid, hash))) => (Some(uuid), hash, Mode::Get),
             Some(Err(err)) => {
                 config.error = Some(err.to_string());
                 (None, "".to_string(), Mode::Error)
@@ -158,6 +161,8 @@ impl Component for App {
         Self {
             link,
             secret: "".to_string(),
+            password: "".to_string(),
+            password_required: config.password_required,
             tasks: vec![],
             base_url: config.base_url,
             uuid,
@@ -167,6 +172,7 @@ impl Component for App {
             button: NodeRef::default(),
             result_field: NodeRef::default(),
             copy_button: NodeRef::default(),
+            password_field: NodeRef::default(),
         }
     }
 
@@ -174,6 +180,13 @@ impl Component for App {
         if first_render {
             if let Some(result_field) = self.result_field.cast::<HtmlElement>() {
                 result_field.set_hidden(true);
+            }
+            if let Mode::Get = self.mode {
+                if !self.password_required {
+                    if let Some(field) = self.password_field.cast::<HtmlElement>() {
+                        field.style().set_css_text("display: none");
+                    }
+                }
             }
         }
     }
@@ -183,9 +196,15 @@ impl Component for App {
             Msg::CreateSecret => {
                 let mc = new_magic_crypt!(&self.encrypt_key, 256, "AES");
 
+                let password = if self.password.is_empty() {
+                    None
+                } else {
+                    Some(self.password.clone())
+                };
+
                 let body = shared::Request::CreateSecret {
                     encrypted_secret: mc.encrypt_str_to_base64(self.secret.clone()),
-                    password: None,
+                    password,
                 };
 
                 let post_request = Request::post("/new_secret")
@@ -213,6 +232,7 @@ impl Component for App {
                 }
 
                 if let Some(button) = self.button.cast::<HtmlButtonElement>() {
+                    self.password.truncate(0);
                     button.set_hidden(true);
                 }
             }
@@ -238,25 +258,34 @@ impl Component for App {
                 AppError::FailedToPostSecret => {
                     self.error_msg = Some("Failed to post secret.".into())
                 }
+                AppError::ServerError(msg) => self.error_msg = Some(msg),
             },
             Msg::GetSecret => {
                 if let Some(uuid) = &self.uuid {
-                    let body = shared::Request::GetSecret { uuid: *uuid };
+                    let body = shared::Request::GetSecret {
+                        uuid: *uuid,
+                        password: self.password.clone(),
+                    };
 
                     let post_request = Request::post("/get_secret")
                         .header("Content-Type", "application/json")
                         .body(Json(&body))
                         .unwrap();
 
-                    let request_callback =
-                        self.link
-                            .callback(|response: Response<Result<String, Error>>| {
-                                if let (_meta, Ok(body)) = response.into_parts() {
-                                    Msg::RevealSecret(body)
-                                } else {
-                                    Msg::Error(AppError::GetSecretError)
-                                }
-                            });
+                    let request_callback = self.link.callback(
+                        |response: Response<Json<Result<shared::Response, Error>>>| match response
+                            .into_parts()
+                        {
+                            (_, Json(Ok(shared::Response::Secret(secret)))) => {
+                                Msg::RevealSecret(secret)
+                            }
+                            (_, Json(Ok(shared::Response::Error(msg)))) => {
+                                Msg::Error(AppError::ServerError(msg))
+                            }
+                            (_, Json(Err(_msg))) => Msg::Error(AppError::GetSecretError),
+                            (_, Json(Ok(shared::Response::Uuid(_)))) => unreachable!(),
+                        },
+                    );
 
                     let task = FetchService::fetch(post_request, request_callback);
                     if let Ok(task) = task {
@@ -270,8 +299,12 @@ impl Component for App {
                 let mc = new_magic_crypt!(&self.encrypt_key, 256, "AES");
                 if let Ok(secret) = mc.decrypt_base64_to_string(encrypted_secret) {
                     self.secret = secret;
-                    let button = self.button.cast::<HtmlElement>().unwrap();
-                    button.set_hidden(true);
+                    if let Some(button) = self.button.cast::<HtmlElement>() {
+                        button.set_hidden(true);
+                    }
+                    if let Some(field) = self.password_field.cast::<HtmlElement>() {
+                        field.style().set_css_text("display: none");
+                    }
                 } else {
                     self.update(Msg::Error(AppError::DecryptError));
                 };
@@ -294,6 +327,9 @@ impl Component for App {
                     }
                 }
             }
+            Msg::UpdatePassword(password) => {
+                self.password = password;
+            }
         }
         true
     }
@@ -309,6 +345,9 @@ impl Component for App {
         let create_secret = self.link.callback(|_| Msg::CreateSecret);
         let show_secret = self.link.callback(|_| Msg::GetSecret);
         let copy_to_clipboard = self.link.callback(|_| Msg::CopyToClipboard);
+        let update_password = self
+            .link
+            .callback(|e: InputData| Msg::UpdatePassword(e.value));
 
         match self.mode {
             Mode::Error => html! {
@@ -325,18 +364,23 @@ impl Component for App {
                     <p>{ &self.show_error() }</p>
                     <textarea class="card w-100" id="secret" name="secret" rows="4" cols="50" value=&self.secret></textarea>
                     <hr/>
-                    <br/>
-                    <button class="btn primary" ref=self.button.clone() onclick=show_secret>{ "Reveal" }</button>
+                    <div class="row">
+                        <div class="3 col" ref=self.password_field.clone()>
+                            <input oninput=update_password value=&self.password class="card" type="password" name="password" placeholder="Password required" />
+                        </div>
+                        <div class="col">
+                            <button class="btn primary" ref=self.button.clone() onclick=show_secret>{ "Reveal" }</button>
+                        </div>
+                    </div>
                 </div>
             },
             Mode::New => html! {
                 <div class="c">
                     <h1>{ "Create new secret" }</h1>
                     <p>{ &self.show_error() }</p>
-                    <form action="/new_secret" method="post">
                     // TODO: config for max size, check on client and server side
                     <textarea maxlength="10000" class="card w-100" id="secret" name="secret" rows="4" cols="50" oninput=update_secret value=&self.secret></textarea>
-                    </form>
+                    <input oninput=update_password value=&self.password class="card" type="password" name="password" placeholder="Optional password" />
                     <hr/>
                     <div ref=self.result_field.clone()>
                         <div class="row">

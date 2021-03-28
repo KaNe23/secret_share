@@ -22,7 +22,6 @@ Inspired by [onetimesecret](https://github.com/onetimesecret/onetimesecret)
 ![reveal_secret](https://github.com/KaNe23/secret_share/blob/master/pictures/reveal_secret.png?raw=true)
 
 ### Todo:
-- implement passwords for secrets
 - implement expiration times for secrets
 - add env vars for AES key length
 - add redis as data store

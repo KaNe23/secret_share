@@ -14,7 +14,9 @@ use actix_web::{
 use askama::Template;
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use lazy_static::lazy_static;
+use serde::{Deserialize, Serialize};
 use std::{path::PathBuf, str::FromStr};
+use shared::{Request, Response, Config};
 
 lazy_static! {
     static ref BASE_URL: String = if let Ok(base_url) = std::env::var("BASE_URL") {
@@ -36,7 +38,7 @@ lazy_static! {
 #[derive(Template)]
 #[template(path = "index.html", escape = "none")]
 struct IndexTemplate {
-    json_config: Json<shared::Config>,
+    json_config: Json<Config>,
 }
 
 #[get("/{uuid}")]
@@ -44,27 +46,48 @@ async fn index_uuid(web::Path(uuid): web::Path<String>) -> impl Responder {
     let key = match Uuid::from_str(&uuid) {
         Ok(key) => key,
         Err(_msg) => {
-            return render_index_page(Some(
-                "Invalid secret key (UUID), likely an incomplete link/url.".to_string(),
-            ))
+            return render_index_page(
+                Some("Invalid secret key (UUID), likely an incomplete link/url.".to_string()),
+                false,
+            )
         }
     };
 
     match key_exists(key) {
         Ok(false) => {
-            return render_index_page(Some("Secret not found or already viewed.".to_string()))
+            return render_index_page(
+                Some("Secret not found or already viewed.".to_string()),
+                false,
+            )
         }
-        Err(msg) => return render_index_page(Some(format!("Error: {}", msg))),
-        _ => render_index_page(None),
+        Err(msg) => return render_index_page(Some(format!("Error: {}", msg)), false),
+        _ => {}
+    }
+
+    match find_entry(key) {
+        Ok((_uuid, entry)) => {
+            if entry.password.is_some() {
+                return render_index_page(None, true);
+            } else {
+                return render_index_page(None, false);
+            }
+        }
+        Err(msg) => {
+            return render_index_page(
+                Some(format!("Secret found but could not be fetched: {}", msg)),
+                false,
+            )
+        }
     }
 }
 
-fn render_index_page(error: Option<String>) -> impl Responder {
+fn render_index_page(error: Option<String>, password_required: bool) -> impl Responder {
     let index_page = IndexTemplate {
-        json_config: Json(shared::Config {
+        json_config: Json(Config {
             error,
             base_url: BASE_URL.clone(),
-            key_length: *KEY_LENGTH
+            key_length: *KEY_LENGTH,
+            password_required,
         }),
     };
 
@@ -76,40 +99,62 @@ fn render_index_page(error: Option<String>) -> impl Responder {
 
 #[get("/")]
 async fn index() -> impl Responder {
-    render_index_page(None)
+    render_index_page(None, false)
 }
 
 #[post("/get_secret")]
-async fn get_secret(params: web::Json<shared::Request>) -> impl Responder {
-    let key = if let Json(shared::Request::GetSecret { uuid }) = params {
-        uuid
+async fn get_secret(params: web::Json<Request>) -> impl Responder {
+    let (key, password) = if let Json(Request::GetSecret { uuid, password }) = params {
+        (uuid, password)
     } else {
-        return HttpResponse::BadRequest().finish();
+        return HttpResponse::Ok().json(Response::Error("Invalid request!".to_string()));
     };
 
-    let (mut store, secret) = match find_secret(key) {
+    let (mut store, entry) = match find_entry(key) {
         Ok((store, key)) => (store, key),
-        Err(msg) => return HttpResponse::InternalServerError().body(format!("Error: {}", msg)),
+        Err(msg) => return HttpResponse::Ok().json(Response::Error(format!("Error: {}", msg))),
     };
+
+    if let Some(entry_password) = entry.password {
+        match bcrypt::verify(password, &entry_password){
+            Ok(false) => {
+                return HttpResponse::Ok().json(Response::Error("Invalid password!".to_string()));
+            }
+            Err(msg) => {
+                return HttpResponse::Ok().json(Response::Error(format!("Error while validating password: {}", msg)));
+            }
+            _ => {}
+        }
+
+    }
 
     store.remove(&key);
 
     if let Err(msg) = store.commit() {
-        return HttpResponse::InternalServerError().body(format!("Error: {}", msg));
+        return HttpResponse::Ok().json(Response::Error(format!("Error: {}", msg)));
     }
 
-    HttpResponse::Ok()
-        .content_type("text/html; charset=utf-8")
-        .body(secret)
+    HttpResponse::Ok().json(Response::Secret(entry.secret))
 }
 
 #[post("/new_secret")]
-async fn new_secret(params: web::Json<shared::Request>) -> impl Responder {
-    let (secret, password) = if let Json(shared::Request::CreateSecret {
+async fn new_secret(params: web::Json<Request>) -> impl Responder {
+    let (secret, password) = if let Json(Request::CreateSecret {
         encrypted_secret,
         password,
     }) = params
     {
+        let password = if let Some(password) = password {
+            // randomly choose cost of 5
+            if let Ok(result) = bcrypt::hash(password, 5) {
+                Some(result)
+            } else {
+                return HttpResponse::InternalServerError().body("Error: Unable to hash password.");
+            }
+        } else {
+            None
+        };
+
         (encrypted_secret, password)
     } else {
         return HttpResponse::BadRequest().finish();
@@ -122,7 +167,9 @@ async fn new_secret(params: web::Json<shared::Request>) -> impl Responder {
 
     let key = Uuid::new_v4();
 
-    if let Err(msg) = store.insert(key, &secret) {
+    println!("password: {:?}", password);
+
+    if let Err(msg) = store.insert(key, &Entry { secret, password }) {
         return HttpResponse::InternalServerError().body(format!("Error: {}", msg));
     }
 
@@ -130,9 +177,15 @@ async fn new_secret(params: web::Json<shared::Request>) -> impl Responder {
         return HttpResponse::InternalServerError().body(format!("Error: {}", msg));
     }
 
-    let response = shared::Response::Uuid(key);
+    let response = Response::Uuid(key);
 
     HttpResponse::Ok().json(response)
+}
+
+#[derive(Serialize, Deserialize)]
+struct Entry {
+    secret: String,
+    password: Option<String>,
 }
 
 fn get_storage() -> Result<ValueRepo<Uuid, DirectoryStore>, Error> {
@@ -143,11 +196,11 @@ fn get_storage() -> Result<ValueRepo<Uuid, DirectoryStore>, Error> {
     OpenOptions::new(store).create::<ValueRepo<Uuid, _>>()
 }
 
-fn find_secret(key: Uuid) -> Result<(ValueRepo<Uuid, DirectoryStore>, String), Error> {
+fn find_entry(key: Uuid) -> Result<(ValueRepo<Uuid, DirectoryStore>, Entry), Error> {
     let store = get_storage()?;
-    let secret: String = store.get(&key)?;
+    let entry: Entry = store.get(&key)?;
 
-    Ok((store, secret))
+    Ok((store, entry))
 }
 
 fn key_exists(key: Uuid) -> Result<bool, Error> {
