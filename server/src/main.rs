@@ -28,11 +28,19 @@ lazy_static! {
     } else {
         10000
     };
+
     static ref BASE_URL: String = if let Ok(base_url) = std::env::var("BASE_URL") {
         base_url
     } else {
         "http://localhost:8080".to_string()
     };
+
+    static ref PORT: String = if let Ok(port) = std::env::var("PORT") {
+        port
+    } else {
+        "8080".to_string()
+    };
+
     static ref KEY_LENGTH: i32 = if let Ok(key_len) = std::env::var("KEY_LENGTH") {
         if let Ok(key_len) = i32::from_str(&key_len) {
             key_len
@@ -234,7 +242,7 @@ async fn main() -> std::io::Result<()> {
             .service(get_secret)
             .service(fs::Files::new("/pkg", "client/pkg").show_files_listing())
     })
-    .bind("127.0.0.1:8080")?
+    .bind(format!("0.0.0.0:{}", *PORT))?
     .run()
     .await
 }
