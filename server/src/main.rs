@@ -1,8 +1,9 @@
 use acid_store::{
     repo::{value::ValueRepo, OpenOptions},
-    Error,
+    store::redis::Client,
+    store::RedisStore,
+    uuid::Uuid
 };
-use acid_store::{store::DirectoryStore, uuid::Uuid};
 use actix_files as fs;
 use actix_web::{
     get,
@@ -11,36 +12,39 @@ use actix_web::{
     web::{self, Json},
     App, HttpResponse, HttpServer, Responder,
 };
+use anyhow::{Error, Result};
 use askama::Template;
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
-use std::{path::PathBuf, str::FromStr};
-use shared::{Request, Response, Config};
+use shared::{Config, Request, Response};
+use std::str::FromStr;
 
 lazy_static! {
+    static ref REDIS_HOST: String = if let Ok(redis_host) = std::env::var("REDIS_HOST") {
+        format!("redis://{}/", redis_host)
+    } else {
+        "redis://127.0.0.1/".to_string()
+    };
     static ref MAX_LENGTH: i32 = if let Ok(max_length) = std::env::var("MAX_LENGTH") {
-        if let Ok(max_length) = max_length.parse(){
+        if let Ok(max_length) = max_length.parse() {
             max_length
-        }else{
+        } else {
             10000
         }
     } else {
         10000
     };
-
     static ref BASE_URL: String = if let Ok(base_url) = std::env::var("BASE_URL") {
         base_url
     } else {
         "http://localhost:8080".to_string()
     };
-
     static ref PORT: String = if let Ok(port) = std::env::var("PORT") {
         port
     } else {
         "8080".to_string()
     };
-
     static ref KEY_LENGTH: i32 = if let Ok(key_len) = std::env::var("KEY_LENGTH") {
         if let Ok(key_len) = i32::from_str(&key_len) {
             key_len
@@ -72,10 +76,7 @@ async fn index_uuid(web::Path(uuid): web::Path<String>) -> impl Responder {
 
     match key_exists(key) {
         Ok(false) => {
-            return render_index_page(
-                "Secret not found or already viewed.".to_string(),
-                false,
-            )
+            return render_index_page("Secret not found or already viewed.".to_string(), false)
         }
         Err(msg) => return render_index_page(format!("Error: {}", msg), false),
         _ => {}
@@ -134,16 +135,18 @@ async fn get_secret(params: web::Json<Request>) -> impl Responder {
     };
 
     if let Some(entry_password) = entry.password {
-        match bcrypt::verify(password, &entry_password){
+        match bcrypt::verify(password, &entry_password) {
             Ok(false) => {
                 return HttpResponse::Ok().json(Response::Error("Invalid password!".to_string()));
             }
             Err(msg) => {
-                return HttpResponse::Ok().json(Response::Error(format!("Error while validating password: {}", msg)));
+                return HttpResponse::Ok().json(Response::Error(format!(
+                    "Error while validating password: {}",
+                    msg
+                )));
             }
             _ => {}
         }
-
     }
 
     store.remove(&key);
@@ -204,15 +207,14 @@ struct Entry {
     password: Option<String>,
 }
 
-fn get_storage() -> Result<ValueRepo<Uuid, DirectoryStore>, Error> {
-    // move location into env var
-    let path = PathBuf::from("store");
-
-    let store = DirectoryStore::new(path)?;
-    OpenOptions::new(store).create::<ValueRepo<Uuid, _>>()
+fn get_storage() -> Result<ValueRepo<Uuid, RedisStore>, Error> {
+    let client = Client::open(REDIS_HOST.clone())?;
+    let con = client.get_connection()?;
+    let store = RedisStore::new(con)?;
+    Ok(OpenOptions::new(store).create::<ValueRepo<Uuid, _>>()?)
 }
 
-fn find_entry(key: Uuid) -> Result<(ValueRepo<Uuid, DirectoryStore>, Entry), Error> {
+fn find_entry(key: Uuid) -> Result<(ValueRepo<Uuid, RedisStore>, Entry), Error> {
     let store = get_storage()?;
     let entry: Entry = store.get(&key)?;
 
@@ -232,6 +234,8 @@ async fn main() -> std::io::Result<()> {
     // for (key, var) in std::env::vars(){
     //     println!("key: {} val: {}", key, var);
     // }
+
+    println!("Startup!");
 
     HttpServer::new(|| {
         App::new()

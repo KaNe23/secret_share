@@ -12,10 +12,11 @@ actix-files = "0.5"
 askama = "0.10"
 serde = "1.0"
 env_logger = "0.8"
-acid-store = "0.6"
+acid-store = { version = "0.6", features = ["store-redis"] }
 chrono = { version= "0.4", features = ["serde"] }
 lazy_static = "1.4"
 bcrypt = "0.9"
+anyhow = "1"
 
 shared = { path = "../shared"}
 
