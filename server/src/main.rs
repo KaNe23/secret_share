@@ -19,6 +19,15 @@ use std::{path::PathBuf, str::FromStr};
 use shared::{Request, Response, Config};
 
 lazy_static! {
+    static ref MAX_LENGTH: i32 = if let Ok(max_length) = std::env::var("MAX_LENGTH") {
+        if let Ok(max_length) = max_length.parse(){
+            max_length
+        }else{
+            10000
+        }
+    } else {
+        10000
+    };
     static ref BASE_URL: String = if let Ok(base_url) = std::env::var("BASE_URL") {
         base_url
     } else {
@@ -87,6 +96,7 @@ fn render_index_page(error: String, password_required: bool) -> impl Responder {
             error,
             base_url: BASE_URL.clone(),
             key_length: *KEY_LENGTH,
+            max_length: *MAX_LENGTH,
             password_required,
         }),
     };
@@ -166,8 +176,6 @@ async fn new_secret(params: web::Json<Request>) -> impl Responder {
     };
 
     let key = Uuid::new_v4();
-
-    println!("password: {:?}", password);
 
     if let Err(msg) = store.insert(key, &Entry { secret, password }) {
         return HttpResponse::InternalServerError().body(format!("Error: {}", msg));

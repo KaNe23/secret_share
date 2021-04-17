@@ -18,6 +18,7 @@ use yew::{
 pub struct App {
     link: ComponentLink<Self>,
     base_url: String,
+    max_length: i32,
 
     secret: String,
     uuid: Option<Uuid>,
@@ -57,6 +58,10 @@ impl App {
 
     fn get_document() -> Option<Document> {
         App::get_window()?.document()
+    }
+
+    fn length_display(&self) -> String{
+        format!("{} / {}", self.secret.len(), self.max_length)
     }
 
     fn get_uuid_and_hash(key_len: i32) -> Option<Result<(Uuid, String), Error>> {
@@ -161,6 +166,7 @@ impl Component for App {
             encrypt_key,
             mode,
             error_msg: config.error,
+            max_length: config.max_length,
             button: NodeRef::default(),
             result_field: NodeRef::default(),
             copy_button: NodeRef::default(),
@@ -229,7 +235,9 @@ impl Component for App {
                 }
             }
             Msg::UpdateSecret(secret) => {
-                self.secret = secret;
+                if secret.len() <= self.max_length as usize{
+                    self.secret = secret;
+                }
             }
             Msg::Uuid(uuid) => {
                 // ConsoleService::info(&format!("uuid: {:?}", uuid));
@@ -354,7 +362,7 @@ impl Component for App {
                     <h5>{ "This can only be done ONCE!" }</h5>
                     <br/>
                     <p>{ &self.error_msg }</p>
-                    <textarea class="card w-100" id="secret" name="secret" rows="4" cols="50" value=&self.secret></textarea>
+                    <textarea style="resize: none;" class="card w-100" id="secret" name="secret" rows="10" cols="50" value=&self.secret></textarea>
                     <hr/>
                     <div class="row">
                         <div class="3 col" ref=self.password_field.clone()>
@@ -371,8 +379,11 @@ impl Component for App {
                     <h1>{ "Create new secret" }</h1>
                     <p>{ &self.error_msg }</p>
                     // TODO: config for max size, check on client and server side
-                    <textarea maxlength="10000" class="card w-100" id="secret" name="secret" rows="4" cols="50" oninput=update_secret value=&self.secret></textarea>
-                    <input oninput=update_password value=&self.password class="card" type="password" name="password" placeholder="Optional password" />
+                    <textarea style="resize: none;" maxlength=&self.max_length class="card w-100" id="secret" name="secret" rows="10" cols="50" oninput=update_secret value=&self.secret></textarea>
+                    <div class="row" style="border-spacing:0 0">
+                        <input oninput=update_password value=&self.password class="card" type="password" name="password" placeholder="Optional password" />
+                        <p class="3 col" style="text-align: right; color: #aaa">{ &self.length_display() }</p>
+                    </div>
                     <hr/>
                     <div ref=self.result_field.clone()>
                         <div class="row">

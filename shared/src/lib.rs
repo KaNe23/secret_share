@@ -26,6 +26,7 @@ pub struct Config {
     pub error: String,
     pub base_url: String,
     pub key_length: i32,
+    pub max_length: i32,
     pub password_required: bool,
 }
 
@@ -35,6 +36,7 @@ impl Default for Config {
             error: "".to_string(),
             base_url: "".to_string(),
             key_length: 16,
+            max_length: 10000,
             password_required: false,
         }
     }
