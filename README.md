@@ -24,4 +24,3 @@ Inspired by [onetimesecret](https://github.com/onetimesecret/onetimesecret)
 ### Todo:
 - implement expiration times for secrets
 - add env vars for AES key length
-- add redis as data store
