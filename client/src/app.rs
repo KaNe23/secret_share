@@ -3,6 +3,8 @@ use if_chain::if_chain;
 use magic_crypt::{new_magic_crypt, MagicCryptTrait};
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
+use shared::Lifetime;
+use std::str::FromStr;
 use uuid::Uuid;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{Document, HtmlButtonElement, HtmlElement, Url, Window};
@@ -14,17 +16,19 @@ use yew::{
         FetchService,
     },
 };
-
+#[derive(Debug)]
 pub struct App {
     link: ComponentLink<Self>,
     base_url: String,
     max_length: i32,
+    lifetimes: Vec<Lifetime>,
 
     secret: String,
     uuid: Option<Uuid>,
     encrypt_key: String,
     password: String,
     password_required: bool,
+    lifetime: Lifetime,
 
     error_msg: String,
 
@@ -37,6 +41,7 @@ pub struct App {
     password_field: NodeRef,
 }
 
+#[derive(Debug)]
 enum Mode {
     New,
     Get,
@@ -102,6 +107,7 @@ pub enum Msg {
     Error(AppError),
     CopyToClipboard,
     UpdatePassword(String),
+    UpdateLifetime(ChangeData),
 }
 
 pub enum AppError {
@@ -111,6 +117,7 @@ pub enum AppError {
     GetSecretError,
     DecryptError,
     ServerError(String),
+    InvalidLifetime,
 }
 
 impl Component for App {
@@ -171,6 +178,8 @@ impl Component for App {
             result_field: NodeRef::default(),
             copy_button: NodeRef::default(),
             password_field: NodeRef::default(),
+            lifetimes: config.lifetimes,
+            lifetime: Lifetime::Days(7),
         }
     }
 
@@ -191,11 +200,28 @@ impl Component for App {
 
     fn update(&mut self, msg: Self::Message) -> ShouldRender {
         match msg {
-            Msg::UpdateSecret(_) => {},
-            _ => self.error_msg = "".to_string()
+            Msg::UpdateSecret(_) => {}
+            _ => self.error_msg = "".to_string(),
         }
 
         match msg {
+            Msg::UpdateLifetime(change_data) => {
+                if_chain! {
+                    if let ChangeData::Select(lifetime) = change_data;
+                    let value: String = lifetime.value();
+                    if let Some(unit) = value.chars().last();
+                    let number = value.trim_end_matches(unit);
+                    if let Ok(amount) = i32::from_str(number);
+                    then{
+                        match unit {
+                            'd' => self.lifetime = Lifetime::Days(amount),
+                            'h' => self.lifetime = Lifetime::Hours(amount),
+                            'm' => self.lifetime = Lifetime::Minutes(amount),
+                            _ => {}
+                        }
+                    }
+                }
+            }
             Msg::CreateSecret => {
                 let mc = new_magic_crypt!(&self.encrypt_key, 256, "AES");
 
@@ -208,6 +234,7 @@ impl Component for App {
                 let body = shared::Request::CreateSecret {
                     encrypted_secret: mc.encrypt_str_to_base64(self.secret.clone()),
                     password,
+                    lifetime: self.lifetime.clone(),
                 };
 
                 let post_request = Request::post("/new_secret")
@@ -257,6 +284,7 @@ impl Component for App {
                 AppError::DecryptError => self.error_msg = "Could not decrypt secret.".into(),
                 AppError::FailedToFetchSecret => self.error_msg = "Failed to fetch secret.".into(),
                 AppError::FailedToPostSecret => self.error_msg = "Failed to post secret.".into(),
+                AppError::InvalidLifetime => self.error_msg = "Invalid lifetime.".into(),
                 AppError::ServerError(msg) => self.error_msg = msg,
             },
             Msg::GetSecret => {
@@ -348,6 +376,8 @@ impl Component for App {
             .link
             .callback(|e: InputData| Msg::UpdatePassword(e.value));
 
+        let update_lifetime = self.link.callback(Msg::UpdateLifetime);
+
         match self.mode {
             Mode::Error => html! {
                 <div class="c">
@@ -363,8 +393,8 @@ impl Component for App {
                     <p>{ &self.error_msg }</p>
                     <textarea style="resize: none;" class="card w-100" id="secret" name="secret" rows="10" cols="50" value=&self.secret></textarea>
                     <hr/>
-                    <div class="row">
-                        <div class="3 col" ref=self.password_field.clone()>
+                    <div class="row" style="border-spacing:0 0">
+                        <div class="3 col" style="padding-right: 1em" ref=self.password_field.clone()>
                             <input oninput=update_password value=&self.password class="card" type="password" name="password" placeholder="Password required" />
                         </div>
                         <div class="col">
@@ -381,12 +411,16 @@ impl Component for App {
                     <textarea style="resize: none;" maxlength=&self.max_length class="card w-100" id="secret" name="secret" rows="10" cols="50" oninput=update_secret value=&self.secret></textarea>
                     <div class="row" style="border-spacing:0 0">
                         <input oninput=update_password value=&self.password class="card" type="password" name="password" placeholder="Optional password" />
+                        <label style="margin-left: 1em; color: #777">{ "Lifetime:" }</label>
+                        <select onchange=update_lifetime style="margin-left: 1em" class="card w-10">
+                            { for self.lifetimes.iter().map(|lifetime| html! {<option value=lifetime.to_string()> { lifetime.long_string() }</option>}) }
+                        </select>
                         <p class="3 col" style="text-align: right; color: #aaa">{ &self.length_display() }</p>
                     </div>
                     <hr/>
                     <div ref=self.result_field.clone()>
-                        <div class="row">
-                            <div class="10 col">
+                        <div class="row" style="border-spacing:0 0">
+                            <div class="10 col" style="padding-right: 1em">
                                 <pre>{ &self.url() }</pre>
                             </div>
                             <div class="3 col">

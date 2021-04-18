@@ -8,7 +8,6 @@ use actix_web::{
 };
 use anyhow::{Error, Result};
 use askama::Template;
-use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use lazy_static::lazy_static;
 use redis::{
     aio::Connection, AsyncCommands, Client, ErrorKind, FromRedisValue, RedisError, RedisResult,
@@ -16,7 +15,7 @@ use redis::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{from_str, to_string};
-use shared::{Config, Request, Response};
+use shared::{Config, Lifetime, Request, Response};
 use std::str::FromStr;
 use uuid::Uuid;
 
@@ -54,6 +53,18 @@ lazy_static! {
     } else {
         16
     };
+    static ref DEFAULT_LIFETIMES: Vec<Lifetime> = vec![
+        Lifetime::Days(7),
+        Lifetime::Days(3),
+        Lifetime::Days(1),
+        Lifetime::Hours(12),
+        Lifetime::Hours(4),
+        Lifetime::Hours(1),
+        Lifetime::Minutes(30),
+        Lifetime::Minutes(5),
+    ];
+
+    // static ref LIFETIMES: Vec<String> = DEFAULT_LIFETIMES.iter().map(|ele| ele.0.clone()).collect::<Vec<String>>();
 }
 
 #[derive(Template)]
@@ -76,7 +87,10 @@ async fn index_uuid(web::Path(uuid): web::Path<String>) -> impl Responder {
 
     match key_exists(key).await {
         Ok(false) => {
-            return render_index_page("Secret not found or already viewed.".to_string(), false)
+            return render_index_page(
+                "Secret expired, not found or already viewed.".to_string(),
+                false,
+            )
         }
         Err(msg) => return render_index_page(format!("Error: {}", msg), false),
         _ => {}
@@ -107,6 +121,7 @@ fn render_index_page(error: String, password_required: bool) -> impl Responder {
             key_length: *KEY_LENGTH,
             max_length: *MAX_LENGTH,
             password_required,
+            lifetimes: DEFAULT_LIFETIMES.clone(),
         }),
     };
 
@@ -160,9 +175,10 @@ async fn get_secret(params: web::Json<Request>) -> impl Responder {
 
 #[post("/new_secret")]
 async fn new_secret(params: web::Json<Request>) -> impl Responder {
-    let (secret, password) = if let Json(Request::CreateSecret {
+    let (secret, password, lifetime) = if let Json(Request::CreateSecret {
         encrypted_secret,
         password,
+        lifetime,
     }) = params
     {
         let password = if let Some(password) = password {
@@ -176,9 +192,15 @@ async fn new_secret(params: web::Json<Request>) -> impl Responder {
             None
         };
 
-        (encrypted_secret, password)
+        (encrypted_secret, password, lifetime)
     } else {
         return HttpResponse::BadRequest().finish();
+    };
+
+    let lifetime = if DEFAULT_LIFETIMES.contains(&lifetime) {
+        lifetime.to_seconds()
+    } else {
+        return HttpResponse::InternalServerError().body("Error: Invalid Lifetime");
     };
 
     let mut store = match get_storage().await {
@@ -188,8 +210,13 @@ async fn new_secret(params: web::Json<Request>) -> impl Responder {
 
     let key = Uuid::new_v4();
 
-    let result: redis::RedisResult<Entry> =
-        store.set(key.to_string(), Entry { secret, password }).await;
+    let result: RedisResult<Entry> = store.set(key.to_string(), Entry { secret, password }).await;
+
+    if let Err(msg) = result {
+        return HttpResponse::InternalServerError().body(format!("Error: {}", msg));
+    }
+
+    let result: RedisResult<Entry> = store.expire(key.to_string(), lifetime as usize).await;
 
     if let Err(msg) = result {
         return HttpResponse::InternalServerError().body(format!("Error: {}", msg));
