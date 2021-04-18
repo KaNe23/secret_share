@@ -11,7 +11,7 @@ use yew::{
     prelude::*,
     services::{
         fetch::{FetchTask, Request, Response},
-        ConsoleService, FetchService,
+        FetchService,
     },
 };
 
@@ -60,7 +60,7 @@ impl App {
         App::get_window()?.document()
     }
 
-    fn length_display(&self) -> String{
+    fn length_display(&self) -> String {
         format!("{} / {}", self.secret.len(), self.max_length)
     }
 
@@ -191,6 +191,11 @@ impl Component for App {
 
     fn update(&mut self, msg: Self::Message) -> ShouldRender {
         match msg {
+            Msg::UpdateSecret(_) => {},
+            _ => self.error_msg = "".to_string()
+        }
+
+        match msg {
             Msg::CreateSecret => {
                 let mc = new_magic_crypt!(&self.encrypt_key, 256, "AES");
 
@@ -235,7 +240,7 @@ impl Component for App {
                 }
             }
             Msg::UpdateSecret(secret) => {
-                if secret.len() <= self.max_length as usize{
+                if secret.len() <= self.max_length as usize {
                     self.secret = secret;
                 }
             }
@@ -247,17 +252,11 @@ impl Component for App {
                 self.uuid = Some(uuid);
             }
             Msg::Error(error) => match error {
-                AppError::CreateSecretError => {
-                    self.error_msg = "Could not create secret.".into()
-                }
+                AppError::CreateSecretError => self.error_msg = "Could not create secret.".into(),
                 AppError::GetSecretError => self.error_msg = "Could not get secret".into(),
                 AppError::DecryptError => self.error_msg = "Could not decrypt secret.".into(),
-                AppError::FailedToFetchSecret => {
-                    self.error_msg = "Failed to fetch secret.".into()
-                }
-                AppError::FailedToPostSecret => {
-                    self.error_msg = "Failed to post secret.".into()
-                }
+                AppError::FailedToFetchSecret => self.error_msg = "Failed to fetch secret.".into(),
+                AppError::FailedToPostSecret => self.error_msg = "Failed to post secret.".into(),
                 AppError::ServerError(msg) => self.error_msg = msg,
             },
             Msg::GetSecret => {

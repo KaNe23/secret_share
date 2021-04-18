@@ -1,9 +1,3 @@
-use acid_store::{
-    repo::{value::ValueRepo, OpenOptions},
-    store::redis::Client,
-    store::RedisStore,
-    uuid::Uuid
-};
 use actix_files as fs;
 use actix_web::{
     get,
@@ -16,9 +10,15 @@ use anyhow::{Error, Result};
 use askama::Template;
 use chrono::{DateTime, NaiveDateTime, TimeZone, Utc};
 use lazy_static::lazy_static;
+use redis::{
+    aio::Connection, AsyncCommands, Client, ErrorKind, FromRedisValue, RedisError, RedisResult,
+    RedisWrite, ToRedisArgs, Value,
+};
 use serde::{Deserialize, Serialize};
+use serde_json::{from_str, to_string};
 use shared::{Config, Request, Response};
 use std::str::FromStr;
+use uuid::Uuid;
 
 lazy_static! {
     static ref REDIS_HOST: String = if let Ok(redis_host) = std::env::var("REDIS_HOST") {
@@ -74,7 +74,7 @@ async fn index_uuid(web::Path(uuid): web::Path<String>) -> impl Responder {
         }
     };
 
-    match key_exists(key) {
+    match key_exists(key).await {
         Ok(false) => {
             return render_index_page("Secret not found or already viewed.".to_string(), false)
         }
@@ -82,7 +82,7 @@ async fn index_uuid(web::Path(uuid): web::Path<String>) -> impl Responder {
         _ => {}
     }
 
-    match find_entry(key) {
+    match find_entry(key).await {
         Ok((_uuid, entry)) => {
             if entry.password.is_some() {
                 return render_index_page("".to_string(), true);
@@ -129,7 +129,7 @@ async fn get_secret(params: web::Json<Request>) -> impl Responder {
         return HttpResponse::Ok().json(Response::Error("Invalid request!".to_string()));
     };
 
-    let (mut store, entry) = match find_entry(key) {
+    let (mut store, entry) = match find_entry(key).await {
         Ok((store, key)) => (store, key),
         Err(msg) => return HttpResponse::Ok().json(Response::Error(format!("Error: {}", msg))),
     };
@@ -149,10 +149,10 @@ async fn get_secret(params: web::Json<Request>) -> impl Responder {
         }
     }
 
-    store.remove(&key);
+    let result: redis::RedisResult<Entry> = store.del(&key.to_string()).await;
 
-    if let Err(msg) = store.commit() {
-        return HttpResponse::Ok().json(Response::Error(format!("Error: {}", msg)));
+    if let Err(msg) = result {
+        return HttpResponse::InternalServerError().body(format!("Error: {}", msg));
     }
 
     HttpResponse::Ok().json(Response::Secret(entry.secret))
@@ -181,18 +181,17 @@ async fn new_secret(params: web::Json<Request>) -> impl Responder {
         return HttpResponse::BadRequest().finish();
     };
 
-    let mut store = match get_storage() {
+    let mut store = match get_storage().await {
         Ok(store) => store,
         Err(msg) => return HttpResponse::InternalServerError().body(format!("Error: {}", msg)),
     };
 
     let key = Uuid::new_v4();
 
-    if let Err(msg) = store.insert(key, &Entry { secret, password }) {
-        return HttpResponse::InternalServerError().body(format!("Error: {}", msg));
-    }
+    let result: redis::RedisResult<Entry> =
+        store.set(key.to_string(), Entry { secret, password }).await;
 
-    if let Err(msg) = store.commit() {
+    if let Err(msg) = result {
         return HttpResponse::InternalServerError().body(format!("Error: {}", msg));
     }
 
@@ -207,23 +206,68 @@ struct Entry {
     password: Option<String>,
 }
 
-fn get_storage() -> Result<ValueRepo<Uuid, RedisStore>, Error> {
-    let client = Client::open(REDIS_HOST.clone())?;
-    let con = client.get_connection()?;
-    let store = RedisStore::new(con)?;
-    Ok(OpenOptions::new(store).create::<ValueRepo<Uuid, _>>()?)
+impl FromRedisValue for Entry {
+    fn from_redis_value(v: &redis::Value) -> RedisResult<Self> {
+        match v {
+            Value::Nil => Err(RedisError::from((ErrorKind::ResponseError, "Not found"))),
+            Value::Data(_data) => {
+                let values: String = FromRedisValue::from_redis_value(v)?;
+                if let Ok(entry) = from_str(&values) {
+                    Ok(entry)
+                } else {
+                    Err(RedisError::from((
+                        ErrorKind::TypeError,
+                        "Could not deserialize Entry",
+                    )))
+                }
+            }
+            // Okay and Int are good return values, but I have to return some kind of Entry anyway...
+            Value::Okay => Ok(Entry {
+                secret: "".to_string(),
+                password: None,
+            }),
+            Value::Int(_num) => Ok(Entry {
+                secret: "".to_string(),
+                password: None,
+            }),
+            _ => Err(RedisError::from((
+                ErrorKind::ExtensionError,
+                "",
+                format!("Unexpected return type: {:?}", v),
+            ))),
+        }
+    }
 }
 
-fn find_entry(key: Uuid) -> Result<(ValueRepo<Uuid, RedisStore>, Entry), Error> {
-    let store = get_storage()?;
-    let entry: Entry = store.get(&key)?;
+impl ToRedisArgs for Entry {
+    fn write_redis_args<W>(&self, out: &mut W)
+    where
+        W: ?Sized + RedisWrite,
+    {
+        let json = to_string(&self).unwrap();
+        ToRedisArgs::write_redis_args(&json, out);
+    }
 
+    fn is_single_arg(&self) -> bool {
+        false
+    }
+}
+
+async fn get_storage() -> Result<Connection, Error> {
+    let client = Client::open(REDIS_HOST.clone())?;
+    let connection = client.get_async_std_connection().await?;
+    Ok(connection)
+}
+
+async fn find_entry(key: Uuid) -> Result<(Connection, Entry), Error> {
+    let mut store = get_storage().await?;
+    let entry: Entry = store.get(key.to_string()).await?;
     Ok((store, entry))
 }
 
-fn key_exists(key: Uuid) -> Result<bool, Error> {
-    let store = get_storage()?;
-    Ok(store.contains(&key))
+async fn key_exists(key: Uuid) -> Result<bool, Error> {
+    let mut store = get_storage().await?;
+    Ok(store.exists(&key.to_string()).await?)
 }
 
 #[actix_web::main]
@@ -235,7 +279,9 @@ async fn main() -> std::io::Result<()> {
     //     println!("key: {} val: {}", key, var);
     // }
 
-    println!("Startup!");
+    let adress = format!("0.0.0.0:{}", *PORT);
+
+    println!("Listening on: {}", adress);
 
     HttpServer::new(|| {
         App::new()
@@ -246,7 +292,7 @@ async fn main() -> std::io::Result<()> {
             .service(get_secret)
             .service(fs::Files::new("/pkg", "client/pkg").show_files_listing())
     })
-    .bind(format!("0.0.0.0:{}", *PORT))?
+    .bind(adress)?
     .run()
     .await
 }
