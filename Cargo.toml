@@ -1,3 +1,18 @@
 [workspace]
 members = ["client", "server", "shared"]
 default-members = ["server"]
+
+# use the following for binary size optimization:
+
+[profile.release]
+lto = true
+opt-level = 'z'
+codegen-units = 1
+panic = 'abort'
+
+# also run strip, sstrip and
+# upx --best --lzma
+# to reduce the size even further
+# or upx --brute
+# --brute seems broken for Rust right now:
+# https://github.com/upx/upx/issues/224
