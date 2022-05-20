@@ -7,16 +7,16 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-actix-web = "3.3"
-actix-files = "0.5"
-askama = "0.10"
+actix-web = "4.0.1"
+actix-files = "0.6.0"
+askama = "0.11.1"
 serde = "1.0"
 serde_json = "1"
-env_logger = "0.8"
-redis = { version = "0.20",  features = ["aio", "async-std-comp"] }
-uuid = "0.8"
+env_logger = "0.9.0"
+redis = { version = "0.21.5",  features = ["aio", "async-std-comp"] }
+uuid = "1.0.0"
 lazy_static = "1.4"
-bcrypt = "0.9"
+bcrypt = "0.13.0"
 anyhow = "1"
 
 shared = { path = "../shared"}

@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Error};
+use gloo_net::http::Request;
 use if_chain::if_chain;
 use magic_crypt::{new_magic_crypt, MagicCryptTrait};
 use rand::distributions::Alphanumeric;
@@ -7,18 +8,12 @@ use shared::Lifetime;
 use std::str::FromStr;
 use uuid::Uuid;
 use wasm_bindgen_futures::spawn_local;
-use web_sys::{Document, HtmlButtonElement, HtmlElement, Url, Window};
-use yew::{
-    format::Json,
-    prelude::*,
-    services::{
-        fetch::{FetchTask, Request, Response},
-        FetchService,
-    },
-};
+use web_sys::{Document, HtmlButtonElement, HtmlElement, InputEvent, Url, Window};
+use yew::{prelude::*, Context};
+
 #[derive(Debug)]
 pub struct App {
-    link: ComponentLink<Self>,
+    // link: ComponentLink<Self>,
     base_url: String,
     max_length: i32,
     lifetimes: Vec<Lifetime>,
@@ -33,8 +28,7 @@ pub struct App {
     error_msg: String,
 
     mode: Mode,
-    tasks: Vec<FetchTask>,
-
+    // tasks: Vec<FetchTask>,
     button: NodeRef,
     result_field: NodeRef,
     copy_button: NodeRef,
@@ -53,7 +47,7 @@ impl App {
         if let Some(uuid) = &self.uuid {
             format!("{}/{}#{}", self.base_url, uuid, self.encrypt_key)
         } else {
-            format!("")
+            "".to_string()
         }
     }
 
@@ -107,7 +101,8 @@ pub enum Msg {
     Error(AppError),
     CopyToClipboard,
     UpdatePassword(String),
-    UpdateLifetime(ChangeData),
+    UpdateLifetime(String),
+    // UpdateLifetime,
 }
 
 pub enum AppError {
@@ -124,7 +119,7 @@ impl Component for App {
     type Message = Msg;
     type Properties = ();
 
-    fn create(_: Self::Properties, link: ComponentLink<Self>) -> Self {
+    fn create(_ctx: &Context<Self>) -> Self {
         let mut config = if_chain! {
             if let Some(window) = App::get_window();
             if let Some(config) = window.get("config");
@@ -163,11 +158,10 @@ impl Component for App {
         };
 
         Self {
-            link,
             secret: "".to_string(),
             password: "".to_string(),
             password_required: config.password_required,
-            tasks: vec![],
+            // tasks: vec![],
             base_url: config.base_url,
             uuid,
             encrypt_key,
@@ -183,7 +177,7 @@ impl Component for App {
         }
     }
 
-    fn rendered(&mut self, first_render: bool) {
+    fn rendered(&mut self, _ctx: &Context<Self>, first_render: bool) {
         if first_render {
             if let Some(result_field) = self.result_field.cast::<HtmlElement>() {
                 result_field.set_hidden(true);
@@ -198,17 +192,18 @@ impl Component for App {
         }
     }
 
-    fn update(&mut self, msg: Self::Message) -> ShouldRender {
+    fn update(&mut self, ctx: &Context<Self>, msg: Self::Message) -> bool {
         match msg {
             Msg::UpdateSecret(_) => {}
             _ => self.error_msg = "".to_string(),
         }
 
         match msg {
-            Msg::UpdateLifetime(change_data) => {
+            Msg::UpdateLifetime(value) => {
+                // Msg::UpdateLifetime => {
                 if_chain! {
-                    if let ChangeData::Select(lifetime) = change_data;
-                    let value: String = lifetime.value();
+                    // if let ChangeData::Select(lifetime) = change_data;
+                    // let value: String = lifetime.value();
                     if let Some(unit) = value.chars().last();
                     let number = value.trim_end_matches(unit);
                     if let Ok(amount) = i32::from_str(number);
@@ -239,27 +234,23 @@ impl Component for App {
 
                 let post_request = Request::post("/new_secret")
                     .header("Content-Type", "application/json")
-                    .body(Json(&body))
-                    .unwrap();
+                    .json(&body)
+                    .expect("should not fail to serialize json")
+                    .send();
 
-                let res_cb = self.link.callback(
-                    |response: Response<Json<Result<shared::Response, Error>>>| {
-                        if let (_meta, Json(Ok(shared::Response::Uuid(uuid)))) =
-                            response.into_parts()
-                        {
-                            Msg::Uuid(uuid)
+                let link = ctx.link().clone();
+
+                spawn_local(async move {
+                    if let Ok(response) = post_request.await {
+                        if let Ok(shared::Response::Uuid(uuid)) = response.json().await {
+                            link.send_message(Msg::Uuid(uuid))
                         } else {
-                            Msg::Error(AppError::CreateSecretError)
+                            link.send_message(Msg::Error(AppError::CreateSecretError))
                         }
-                    },
-                );
-
-                let task = FetchService::fetch(post_request, res_cb);
-                if let Ok(task) = task {
-                    self.tasks.push(task);
-                } else {
-                    self.update(Msg::Error(AppError::FailedToPostSecret));
-                }
+                    } else {
+                        link.send_message(Msg::Error(AppError::FailedToPostSecret))
+                    }
+                });
 
                 if let Some(button) = self.button.cast::<HtmlButtonElement>() {
                     self.password.truncate(0);
@@ -273,7 +264,7 @@ impl Component for App {
             }
             Msg::Uuid(uuid) => {
                 // ConsoleService::info(&format!("uuid: {:?}", uuid));
-                let result_field = self.result_field.cast::<HtmlElement>().unwrap();
+                let result_field = self.result_field.cast::<HtmlElement>().expect("Unexpected Element");
                 result_field.set_hidden(false);
 
                 self.uuid = Some(uuid);
@@ -296,30 +287,30 @@ impl Component for App {
 
                     let post_request = Request::post("/get_secret")
                         .header("Content-Type", "application/json")
-                        .body(Json(&body))
-                        .unwrap();
+                        .json(&body)
+                        .expect("should not fail to serialize json")
+                        .send();
 
-                    let request_callback = self.link.callback(
-                        |response: Response<Json<Result<shared::Response, Error>>>| match response
-                            .into_parts()
-                        {
-                            (_, Json(Ok(shared::Response::Secret(secret)))) => {
-                                Msg::RevealSecret(secret)
+                    let link = ctx.link().clone();
+                    spawn_local(async move {
+                        if let Ok(response) = post_request.await {
+                            match response.json().await {
+                                Ok(shared::Response::Secret(secret)) => {
+                                    link.send_message(Msg::RevealSecret(secret));
+                                }
+                                Ok(shared::Response::Error(msg)) => {
+                                    link.send_message(Msg::Error(AppError::ServerError(msg)));
+                                }
+                                Err(_msg) => {
+                                    link.send_message(Msg::Error(AppError::GetSecretError));
+                                }
+                                Ok(shared::Response::Uuid(_)) => unreachable!(),
                             }
-                            (_, Json(Ok(shared::Response::Error(msg)))) => {
-                                Msg::Error(AppError::ServerError(msg))
-                            }
-                            (_, Json(Err(_msg))) => Msg::Error(AppError::GetSecretError),
-                            (_, Json(Ok(shared::Response::Uuid(_)))) => unreachable!(),
-                        },
-                    );
-
-                    let task = FetchService::fetch(post_request, request_callback);
-                    if let Ok(task) = task {
-                        self.tasks.push(task);
-                    } else {
-                        self.update(Msg::Error(AppError::FailedToFetchSecret));
-                    }
+                        } else {
+                            web_sys::console::log_1(&"Error Request".into());
+                            link.send_message(Msg::Error(AppError::FailedToFetchSecret));
+                        }
+                    });
                 }
             }
             Msg::RevealSecret(encrypted_secret) => {
@@ -333,7 +324,7 @@ impl Component for App {
                         field.style().set_css_text("display: none");
                     }
                 } else {
-                    self.update(Msg::Error(AppError::DecryptError));
+                    self.update(ctx, Msg::Error(AppError::DecryptError));
                 };
             }
             Msg::CopyToClipboard => {
@@ -361,22 +352,32 @@ impl Component for App {
         true
     }
 
-    fn change(&mut self, _prop: Self::Properties) -> ShouldRender {
-        false
-    }
+    fn view(&self, ctx: &Context<Self>) -> Html {
+        let update_secret = ctx.link().callback(|e: InputEvent| {
+            Msg::UpdateSecret(
+                e.target_dyn_into::<web_sys::HtmlTextAreaElement>()
+                    .expect("Unexpected Element")
+                    .value(),
+            )
+        });
+        let create_secret = ctx.link().callback(|_| Msg::CreateSecret);
+        let show_secret = ctx.link().callback(|_| Msg::GetSecret);
+        let copy_to_clipboard = ctx.link().callback(|_| Msg::CopyToClipboard);
+        let update_password = ctx.link().callback(|e: InputEvent| {
+            Msg::UpdatePassword(
+                e.target_dyn_into::<web_sys::HtmlInputElement>()
+                    .expect("Unexpected Element")
+                    .value(),
+            )
+        });
 
-    fn view(&self) -> Html {
-        let update_secret = self
-            .link
-            .callback(|e: InputData| Msg::UpdateSecret(e.value));
-        let create_secret = self.link.callback(|_| Msg::CreateSecret);
-        let show_secret = self.link.callback(|_| Msg::GetSecret);
-        let copy_to_clipboard = self.link.callback(|_| Msg::CopyToClipboard);
-        let update_password = self
-            .link
-            .callback(|e: InputData| Msg::UpdatePassword(e.value));
-
-        let update_lifetime = self.link.callback(Msg::UpdateLifetime);
+        let update_lifetime = ctx.link().callback(|e: Event| {
+            Msg::UpdateLifetime(
+                e.target_dyn_into::<web_sys::HtmlSelectElement>()
+                    .expect("Unexpected Element")
+                    .value(),
+            )
+        });
 
         match self.mode {
             Mode::Error => html! {
@@ -391,14 +392,14 @@ impl Component for App {
                     <h5>{ "This can only be done ONCE!" }</h5>
                     <br/>
                     <p>{ &self.error_msg }</p>
-                    <textarea style="resize: none;" class="card w-100" id="secret" name="secret" rows="10" cols="50" value=&self.secret></textarea>
+                    <textarea style="resize: none;" class="card w-100" id="secret" name="secret" rows="10" cols="50" value={self.secret.to_string()}></textarea>
                     <hr/>
                     <div class="row" style="border-spacing:0 0">
-                        <div class="3 col" style="padding-right: 1em" ref=self.password_field.clone()>
-                            <input oninput=update_password value=&self.password class="card" type="password" name="password" placeholder="Password required" />
+                        <div class="3 col" style="padding-right: 1em" ref={self.password_field.clone()}>
+                            <input oninput={update_password} value={self.password.to_string()} class="card" type="password" name="password" placeholder="Password required" />
                         </div>
                         <div class="col">
-                            <button class="btn primary" ref=self.button.clone() onclick=show_secret>{ "Reveal" }</button>
+                            <button class="btn primary" ref={self.button.clone()} onclick={show_secret}>{ "Reveal" }</button>
                         </div>
                     </div>
                 </div>
@@ -408,27 +409,27 @@ impl Component for App {
                     <h1>{ "Create new secret" }</h1>
                     <p>{ &self.error_msg }</p>
                     // TODO: config for max size, check on client and server side
-                    <textarea style="resize: none;" maxlength=&self.max_length class="card w-100" id="secret" name="secret" rows="10" cols="50" oninput=update_secret value=&self.secret></textarea>
+                    <textarea style="resize: none;" maxlength={self.max_length.to_string()} class="card w-100" id="secret" name="secret" rows="10" cols="50" oninput={update_secret} value={self.secret.to_string()}></textarea>
                     <div class="row" style="border-spacing:0 0">
-                        <input oninput=update_password value=&self.password class="card" type="password" name="password" placeholder="Optional password" />
+                        <input oninput={update_password} value={self.password.to_string()} class="card" type="password" name="password" placeholder="Optional password" />
                         <label style="margin-left: 1em; color: #777">{ "Lifetime:" }</label>
-                        <select onchange=update_lifetime style="margin-left: 1em" class="card w-10">
-                            { for self.lifetimes.iter().map(|lifetime| html! {<option value=lifetime.to_string()> { lifetime.long_string() }</option>}) }
+                        <select onchange={update_lifetime} style="margin-left: 1em" class="card w-10">
+                            { for self.lifetimes.iter().map(|lifetime| html! {<option value={lifetime.to_string()}> { lifetime.long_string() }</option>}) }
                         </select>
                         <p class="3 col" style="text-align: right; color: #aaa">{ &self.length_display() }</p>
                     </div>
                     <hr/>
-                    <div ref=self.result_field.clone()>
+                    <div ref={self.result_field.clone()}>
                         <div class="row" style="border-spacing:0 0">
                             <div class="10 col" style="padding-right: 1em">
                                 <pre>{ &self.url() }</pre>
                             </div>
                             <div class="3 col">
-                                <button ref=self.copy_button.clone() onclick=copy_to_clipboard class="card btn" style="vertical-align: text-bottom; width: 100%">{ "Copy to Clipboard." }</button>
+                                <button ref={self.copy_button.clone()} onclick={copy_to_clipboard} class="card btn" style="vertical-align: text-bottom; width: 100%">{ "Copy to Clipboard." }</button>
                             </div>
                         </div>
                     </div>
-                    <button class="btn primary" ref=self.button.clone() onclick=create_secret>{ "Create" }</button>
+                    <button class="btn primary" ref={self.button.clone()} onclick={create_secret}>{ "Create" }</button>
                     <br/>
                     <br/>
                 </div>

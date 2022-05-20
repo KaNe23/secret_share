@@ -74,7 +74,7 @@ struct IndexTemplate {
 }
 
 #[get("/{uuid}")]
-async fn index_uuid(web::Path(uuid): web::Path<String>) -> impl Responder {
+async fn index_uuid(uuid: web::Path<String>) -> impl Responder {
     let key = match Uuid::from_str(&uuid) {
         Ok(key) => key,
         Err(_msg) => {
@@ -99,9 +99,9 @@ async fn index_uuid(web::Path(uuid): web::Path<String>) -> impl Responder {
     match find_entry(key).await {
         Ok((_uuid, entry)) => {
             if entry.password.is_some() {
-                return render_index_page("".to_string(), true);
+                render_index_page("".to_string(), true)
             } else {
-                return render_index_page("".to_string(), false);
+                render_index_page("".to_string(), false)
             }
         }
         Err(msg) => {
