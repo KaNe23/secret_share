@@ -1,4 +1,4 @@
-use actix_files as fs;
+use actix_files::Files;
 use actix_web::{
     get,
     middleware::Logger,
@@ -317,7 +317,7 @@ async fn main() -> std::io::Result<()> {
             .service(index_uuid)
             .service(new_secret)
             .service(get_secret)
-            .service(fs::Files::new("/pkg", "client/pkg").show_files_listing())
+            .service(Files::new("/pkg", "./client/dist/").prefer_utf8(true))
     })
     .bind(adress)?
     .run()

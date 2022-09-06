@@ -1,18 +1,18 @@
 # requirements:
 - rust
-- wasm-pack
-- rollup with rollup-plugin-postcss
+- wasm-pack via cargo
+- trunk via cargo
+- wasm-bindgen-cli via cargo
+- (rustup target add wasm32-unknown-unknown)
 - musl
 - (rustup target add x86_64-unknown-linux-musl)
 
-# build and run locally
-wasm-pack build client --release --target web &&
-rollup -p rollup-plugin-postcss client/static/main.js --format iife --file client/pkg/bundle.js &&
+# build and run locally (redis not included)
+trunk build --release client/index.html &&
 cargo run --release
 
 # build and run in scratch container
-wasm-pack build client --release --target web &&
-rollup -p rollup-plugin-postcss client/static/main.js --format iife --file client/pkg/bundle.js &&
+trunk build --release client/index.html &&
 cargo build --release --workspace --exclude client &&
 docker rmi secret_share &&
 docker build -t secret_share . &&

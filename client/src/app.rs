@@ -329,7 +329,7 @@ impl Component for App {
             }
             Msg::CopyToClipboard => {
                 if let Some(window) = App::get_window() {
-                    let clipboard = window.navigator().clipboard();
+                    let clipboard = window.navigator().clipboard().expect("Could not access clipboard");
 
                     let promise = web_sys::Clipboard::write_text(&clipboard, &self.url());
                     let future = wasm_bindgen_futures::JsFuture::from(promise);
@@ -408,7 +408,6 @@ impl Component for App {
                 <div class="c">
                     <h1>{ "Create new secret" }</h1>
                     <p>{ &self.error_msg }</p>
-                    // TODO: config for max size, check on client and server side
                     <textarea style="resize: none;" maxlength={self.max_length.to_string()} class="card w-100" id="secret" name="secret" rows="10" cols="50" oninput={update_secret} value={self.secret.to_string()}></textarea>
                     <div class="row" style="border-spacing:0 0">
                         <input oninput={update_password} value={self.password.to_string()} class="card" type="password" name="password" placeholder="Optional password" />
