@@ -13,7 +13,6 @@ use yew::{prelude::*, Context};
 
 #[derive(Debug)]
 pub struct App {
-    // link: ComponentLink<Self>,
     base_url: String,
     max_length: i32,
     lifetimes: Vec<Lifetime>,
@@ -28,7 +27,6 @@ pub struct App {
     error_msg: String,
 
     mode: Mode,
-    // tasks: Vec<FetchTask>,
     button: NodeRef,
     result_field: NodeRef,
     copy_button: NodeRef,
@@ -102,7 +100,6 @@ pub enum Msg {
     CopyToClipboard,
     UpdatePassword(String),
     UpdateLifetime(String),
-    // UpdateLifetime,
 }
 
 pub enum AppError {
@@ -161,7 +158,6 @@ impl Component for App {
             secret: "".to_string(),
             password: "".to_string(),
             password_required: config.password_required,
-            // tasks: vec![],
             base_url: config.base_url,
             uuid,
             encrypt_key,
@@ -200,10 +196,7 @@ impl Component for App {
 
         match msg {
             Msg::UpdateLifetime(value) => {
-                // Msg::UpdateLifetime => {
                 if_chain! {
-                    // if let ChangeData::Select(lifetime) = change_data;
-                    // let value: String = lifetime.value();
                     if let Some(unit) = value.chars().last();
                     let number = value.trim_end_matches(unit);
                     if let Ok(amount) = i32::from_str(number);
