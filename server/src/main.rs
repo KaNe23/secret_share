@@ -125,7 +125,7 @@ fn render_index_page(error: String, password_required: bool) -> impl Responder {
         }),
     };
 
-    let body = index_page.render().unwrap();
+    let body = index_page.render().expect("Could not render index page.");
     HttpResponse::Ok()
         .content_type("text/html; charset=utf-8")
         .body(body)
@@ -249,11 +249,7 @@ impl FromRedisValue for Entry {
                 }
             }
             // Okay and Int are good return values, but I have to return some kind of Entry anyway...
-            Value::Okay => Ok(Entry {
-                secret: "".to_string(),
-                password: None,
-            }),
-            Value::Int(_num) => Ok(Entry {
+            Value::Okay | Value::Int(_) => Ok(Entry {
                 secret: "".to_string(),
                 password: None,
             }),
@@ -271,7 +267,7 @@ impl ToRedisArgs for Entry {
     where
         W: ?Sized + RedisWrite,
     {
-        let json = to_string(&self).unwrap();
+        let json = to_string(&self).expect("Could not serialize Entry");
         ToRedisArgs::write_redis_args(&json, out);
     }
 
