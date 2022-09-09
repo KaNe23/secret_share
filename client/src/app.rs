@@ -11,7 +11,7 @@ use wasm_bindgen_futures::spawn_local;
 use web_sys::{Document, HtmlButtonElement, HtmlElement, InputEvent, Url, Window};
 use yew::{prelude::*, Context};
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct App {
     base_url: String,
     max_length: i32,
@@ -33,8 +33,9 @@ pub struct App {
     password_field: NodeRef,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 enum Mode {
+    #[default]
     New,
     Get,
     Error,
@@ -155,8 +156,6 @@ impl Component for App {
         };
 
         Self {
-            secret: "".to_string(),
-            password: "".to_string(),
             password_required: config.password_required,
             base_url: config.base_url,
             uuid,
@@ -164,12 +163,8 @@ impl Component for App {
             mode,
             error_msg: config.error,
             max_length: config.max_length,
-            button: NodeRef::default(),
-            result_field: NodeRef::default(),
-            copy_button: NodeRef::default(),
-            password_field: NodeRef::default(),
             lifetimes: config.lifetimes,
-            lifetime: Lifetime::Days(7),
+            ..Default::default()
         }
     }
 
@@ -257,7 +252,10 @@ impl Component for App {
             }
             Msg::Uuid(uuid) => {
                 // ConsoleService::info(&format!("uuid: {:?}", uuid));
-                let result_field = self.result_field.cast::<HtmlElement>().expect("Unexpected Element");
+                let result_field = self
+                    .result_field
+                    .cast::<HtmlElement>()
+                    .expect("Unexpected Element");
                 result_field.set_hidden(false);
 
                 self.uuid = Some(uuid);
@@ -322,7 +320,10 @@ impl Component for App {
             }
             Msg::CopyToClipboard => {
                 if let Some(window) = App::get_window() {
-                    let clipboard = window.navigator().clipboard().expect("Could not access clipboard");
+                    let clipboard = window
+                        .navigator()
+                        .clipboard()
+                        .expect("Could not access clipboard");
 
                     let promise = web_sys::Clipboard::write_text(&clipboard, &self.url());
                     let future = wasm_bindgen_futures::JsFuture::from(promise);
@@ -406,7 +407,9 @@ impl Component for App {
                         <input oninput={update_password} value={self.password.to_string()} class="card" type="password" name="password" placeholder="Optional password" />
                         <label style="margin-left: 1em; color: #777">{ "Lifetime:" }</label>
                         <select onchange={update_lifetime} style="margin-left: 1em" class="card w-10">
-                            { for self.lifetimes.iter().map(|lifetime| html! {<option value={lifetime.to_string()}> { lifetime.long_string() }</option>}) }
+                            { for self.lifetimes.iter().map(|lifetime|
+                                html! {<option value={lifetime.to_string()} selected={self.lifetime == *lifetime}> { lifetime.long_string() }</option>})
+                            }
                         </select>
                         <p class="3 col" style="text-align: right; color: #aaa">{ &self.length_display() }</p>
                     </div>

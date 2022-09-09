@@ -105,7 +105,7 @@ async fn index_uuid(uuid: web::Path<String>) -> impl Responder {
             }
         }
         Err(msg) => {
-            return render_index_page(
+            render_index_page(
                 format!("Secret found but could not be fetched: {}", msg),
                 false,
             )

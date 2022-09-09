@@ -15,7 +15,7 @@ pub enum Request {
     },
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub enum Lifetime {
     Days(i32),
     Hours(i32),
@@ -29,6 +29,12 @@ impl ToString for Lifetime {
             Lifetime::Hours(amount) => format!("{}h", amount),
             Lifetime::Minutes(amount) => format!("{}m", amount),
         }
+    }
+}
+
+impl Default for Lifetime {
+    fn default() -> Lifetime {
+        Self::Days(7)
     }
 }
 
