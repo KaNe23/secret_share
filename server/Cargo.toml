@@ -16,6 +16,7 @@ frontend-seed = []
 actix-web = "4.2.1"
 actix-files = "0.6.2"
 # askama = "0.11.0"
+# use git for now till they release 0.12.0
 askama = { git = "https://github.com/djc/askama" }
 serde = "1.0.145"
 serde_json = "1.0.85"

@@ -266,14 +266,36 @@ checksum = "98161a4e3e2184da77bb14f02184cdd111e83bbbcc9979dfee3c44b9a85f5602"
 
 [[package]]
 name = "askama"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb98f10f371286b177db5eeb9a6e5396609555686a35e1d4f7b9a9c6d8af0139"
+dependencies = [
+ "askama_derive 0.11.2",
+ "askama_escape 0.10.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "askama_shared",
+]
+
+[[package]]
+name = "askama"
 version = "0.11.2"
 source = "git+https://github.com/djc/askama#c441459a27eb7c0c476ce70833e05224ba6894fd"
 dependencies = [
- "askama_derive",
+ "askama_derive 0.12.0",
  "askama_escape 0.10.3 (git+https://github.com/djc/askama)",
- "humansize",
+ "humansize 2.0.0",
  "num-traits",
  "percent-encoding",
+]
+
+[[package]]
+name = "askama_derive"
+version = "0.11.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "87bf87e6e8b47264efa9bde63d6225c6276a52e05e91bf37eaa8afd0032d6b71"
+dependencies = [
+ "askama_shared",
+ "proc-macro2",
+ "syn",
 ]
 
 [[package]]
@@ -301,6 +323,26 @@ checksum = "619743e34b5ba4e9703bba34deac3427c72507c7159f5fd030aea8cac0cfe341"
 name = "askama_escape"
 version = "0.10.3"
 source = "git+https://github.com/djc/askama#c441459a27eb7c0c476ce70833e05224ba6894fd"
+
+[[package]]
+name = "askama_shared"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bf722b94118a07fcbc6640190f247334027685d4e218b794dbfe17c32bf38ed0"
+dependencies = [
+ "askama_escape 0.10.3 (registry+https://github.com/rust-lang/crates.io-index)",
+ "humansize 1.1.1",
+ "mime",
+ "mime_guess",
+ "nom",
+ "num-traits",
+ "percent-encoding",
+ "proc-macro2",
+ "quote",
+ "serde",
+ "syn",
+ "toml",
+]
 
 [[package]]
 name = "async-channel"
@@ -650,7 +692,11 @@ dependencies = [
 name = "client_seed"
 version = "0.1.0"
 dependencies = [
+ "askama 0.11.1",
+ "if_chain",
  "seed",
+ "serde-wasm-bindgen",
+ "shared",
 ]
 
 [[package]]
@@ -1224,6 +1270,12 @@ checksum = "c4a1e36c821dbe04574f602848a19f742f4fb3c98d40449f11bcad18d6b17421"
 
 [[package]]
 name = "humansize"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "02296996cb8796d7c6e3bc2d9211b7802812d36999a51bb754123ead7d37d026"
+
+[[package]]
+name = "humansize"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8e12090e3b87a266157c30eef7ee8f430f4226feb8dd970cccea2cc67f52f70e"
@@ -1752,7 +1804,7 @@ dependencies = [
  "actix-files",
  "actix-web",
  "anyhow",
- "askama",
+ "askama 0.11.2",
  "bcrypt",
  "cfg-if",
  "env_logger",
