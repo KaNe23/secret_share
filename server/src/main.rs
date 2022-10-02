@@ -67,10 +67,30 @@ lazy_static! {
     // static ref LIFETIMES: Vec<String> = DEFAULT_LIFETIMES.iter().map(|ele| ele.0.clone()).collect::<Vec<String>>();
 }
 
-#[derive(Template)]
-#[template(path = "index.html", escape = "none")]
-struct IndexTemplate {
-    json_config: Json<Config>,
+#[cfg(all(feature = "frontend-yew", feature = "frontend-seed"))]
+compile_error!(
+    "feature \"frontend-yew\" and feature \"frontend-seed\" cannot be enabled at the same time"
+);
+
+#[cfg(not(any(feature = "frontend-yew", feature = "frontend-seed")))]
+compile_error!(
+    "Either feature \"frontend-yew\" or \"frontend-seed\" must be enabled for this crate."
+);
+
+cfg_if::cfg_if! {
+    if #[cfg(feature = "frontend-yew")] {
+        #[derive(Template)]
+        #[template(path = "index.html", escape = "none", config = "askama.toml")]
+        struct IndexTemplate {
+            json_config: Json<Config>,
+        }
+    } else if #[cfg(feature = "frontend-seed")] {
+        #[derive(Template)]
+        #[template(path = "index.html", escape = "none", config = "askama_seed.toml")]
+        struct IndexTemplate {
+            json_config: Json<Config>,
+        }
+    }
 }
 
 #[get("/{uuid}")]
@@ -104,12 +124,10 @@ async fn index_uuid(uuid: web::Path<String>) -> impl Responder {
                 render_index_page("".to_string(), false)
             }
         }
-        Err(msg) => {
-            render_index_page(
-                format!("Secret found but could not be fetched: {}", msg),
-                false,
-            )
-        }
+        Err(msg) => render_index_page(
+            format!("Secret found but could not be fetched: {}", msg),
+            false,
+        ),
     }
 }
 
@@ -307,13 +325,19 @@ async fn main() -> std::io::Result<()> {
     println!("Listening on: {}", adress);
 
     HttpServer::new(|| {
-        App::new()
+        let app = App::new()
             .wrap(Logger::default())
             .service(index)
             .service(index_uuid)
             .service(new_secret)
-            .service(get_secret)
-            .service(Files::new("/pkg", "./client/dist/").prefer_utf8(true))
+            .service(get_secret);
+
+        #[cfg(feature = "frontend-yew")]
+        let app = app.service(Files::new("/pkg", "./client/dist/").prefer_utf8(true));
+        #[cfg(feature = "frontend-seed")]
+        let app = app.service(Files::new("/pkg", "./client_seed/dist/").prefer_utf8(true));
+
+        app
     })
     .bind(adress)?
     .run()

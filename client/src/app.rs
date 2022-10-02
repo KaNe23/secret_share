@@ -121,7 +121,7 @@ impl Component for App {
         let mut config = if_chain! {
             if let Some(window) = App::get_window();
             if let Some(config) = window.get("config");
-            if let Ok(config) = config.into_serde::<shared::Config>();
+            if let Ok(config) = serde_wasm_bindgen::from_value(config.into());
             then {
                 config
             }else {

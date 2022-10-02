@@ -1,27 +1,19 @@
 use seed::{prelude::*, *};
 
 fn init(_: Url, _: &mut impl Orders<Msg>) -> SecretShare {
-    SecretShare { }
+    SecretShare {}
 }
 
-struct SecretShare {
-    
-}
+struct SecretShare {}
 
 #[derive(Copy, Clone)]
-enum Msg {
-}
+enum Msg {}
 
-
-fn update(msg: Msg, model: &mut SecretShare, _: &mut impl Orders<Msg>) {
-}
+fn update(msg: Msg, model: &mut SecretShare, _: &mut impl Orders<Msg>) {}
 
 fn view(model: &SecretShare) -> Node<Msg> {
-    div![
-        "Secret Share"
-    ]
+    div!["Secret Share"]
 }
-
 
 #[wasm_bindgen(start)]
 pub fn start() {
