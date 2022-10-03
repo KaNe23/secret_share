@@ -1,5 +1,6 @@
+use core::fmt;
 use serde::{Deserialize, Serialize};
-use std::fmt::Display;
+use std::{fmt::Display, num::ParseIntError, str::FromStr};
 use uuid::Uuid;
 
 #[derive(Serialize, Deserialize)]
@@ -15,7 +16,7 @@ pub enum Request {
     },
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Copy)]
 pub enum Lifetime {
     Days(i32),
     Hours(i32),
@@ -35,6 +36,39 @@ impl ToString for Lifetime {
 impl Default for Lifetime {
     fn default() -> Lifetime {
         Self::Days(7)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LifetimeParseError;
+
+impl fmt::Display for LifetimeParseError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Could not parse liftime")
+    }
+}
+
+impl From<ParseIntError> for LifetimeParseError {
+    fn from(_: ParseIntError) -> Self {
+        LifetimeParseError
+    }
+}
+
+impl FromStr for Lifetime {
+    type Err = LifetimeParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let unit = s.chars().last().ok_or(LifetimeParseError)?;
+
+        let number = s.trim_end_matches(unit);
+        let amount = i32::from_str(number)?;
+
+        match unit {
+            'd' => Ok(Lifetime::Days(amount)),
+            'h' => Ok(Lifetime::Hours(amount)),
+            'm' => Ok(Lifetime::Minutes(amount)),
+            _ => Err(LifetimeParseError),
+        }
     }
 }
 
@@ -74,14 +108,14 @@ impl Lifetime {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Clone)]
 pub enum Response {
     Error(String),
     Secret(String),
     Uuid(Uuid),
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct Config {
     pub error: String,
     pub base_url: String,

@@ -5,7 +5,6 @@ use magic_crypt::{new_magic_crypt, MagicCryptTrait};
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use shared::Lifetime;
-use std::str::FromStr;
 use uuid::Uuid;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::{Document, HtmlButtonElement, HtmlElement, InputEvent, Url, Window};
@@ -190,21 +189,7 @@ impl Component for App {
         }
 
         match msg {
-            Msg::UpdateLifetime(value) => {
-                if_chain! {
-                    if let Some(unit) = value.chars().last();
-                    let number = value.trim_end_matches(unit);
-                    if let Ok(amount) = i32::from_str(number);
-                    then{
-                        match unit {
-                            'd' => self.lifetime = Lifetime::Days(amount),
-                            'h' => self.lifetime = Lifetime::Hours(amount),
-                            'm' => self.lifetime = Lifetime::Minutes(amount),
-                            _ => {}
-                        }
-                    }
-                }
-            }
+            Msg::UpdateLifetime(value) => self.lifetime = value.parse().expect("Invalid Lifetime"),
             Msg::CreateSecret => {
                 let mc = new_magic_crypt!(&self.encrypt_key, 256, "AES");
 
@@ -217,7 +202,7 @@ impl Component for App {
                 let body = shared::Request::CreateSecret {
                     encrypted_secret: mc.encrypt_str_to_base64(self.secret.clone()),
                     password,
-                    lifetime: self.lifetime.clone(),
+                    lifetime: self.lifetime,
                 };
 
                 let post_request = Request::post("/new_secret")
