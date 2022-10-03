@@ -140,7 +140,7 @@ fn init(_: Url, _: &mut impl Orders<Msg>) -> SecretShare {
         }
     }
 
-    let model = SecretShare {
+    SecretShare {
         config,
         encrypt_key,
         error,
@@ -148,14 +148,7 @@ fn init(_: Url, _: &mut impl Orders<Msg>) -> SecretShare {
         uuid,
         clipboard_button_text: "Copy to Clipboard.".into(),
         ..Default::default()
-    };
-    debug(&model);
-    model
-}
-
-fn debug(model: &SecretShare) {
-    let nom = format!("{:?}", model);
-    web_sys::console::log_1(&nom.into());
+    }
 }
 
 async fn send_request<V, T>(variables: &V, url: &str) -> fetch::Result<T>
@@ -256,7 +249,6 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
             }
         }
     }
-    debug(model)
 }
 
 fn view(model: &SecretShare) -> Vec<Node<Msg>> {
