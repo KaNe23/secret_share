@@ -174,11 +174,7 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
         Msg::SecretChanged(secret) => model.secret = Some(secret),
         Msg::PasswordChanged(password) => model.password = password,
         Msg::NewSecret => {
-            let mc = new_magic_crypt!(
-                &model.encrypt_key.as_ref().expect("No encrypt key set"),
-                256,
-                "AES"
-            );
+            let mc = new_magic_crypt!(&model.encrypt_key.as_ref().expect("No key set"), 256, "AES");
 
             let encrypted_secret = mc.encrypt_str_to_base64(model.get_secret());
 
@@ -200,7 +196,7 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
         }
         Msg::GetSecret => {
             let request = shared::Request::GetSecret {
-                uuid: model.uuid.expect("uuid not set"),
+                uuid: model.uuid.expect("no uuid set"),
                 password: model.password.clone(),
             };
             orders.perform_cmd(async move {
@@ -212,7 +208,7 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
                 shared::Response::Uuid(uuid) => model.uuid = Some(uuid),
                 shared::Response::Secret(encrypted_secret) => {
                     let mc = new_magic_crypt!(
-                        &model.decrypt_key.as_ref().expect("No encrypt key set"),
+                        &model.decrypt_key.as_ref().expect("No key set"),
                         256,
                         "AES"
                     );
@@ -262,29 +258,22 @@ fn view(model: &SecretShare) -> Vec<Node<Msg>> {
                 h1!["View secret"],
                 h5!["This can only be done ONCE!"]
                 p![&model.error],
-                textarea![
-                    C!["card w-100"],
-                    style![St::Resize => "none"],
-                    attrs![At::Id => "secret", At::Name => "secret", At::Rows => "10", At::Cols => "50", At::Value => model.get_secret(), At::ReadOnly => true],
+                textarea![C!["card w-100"], style![St::Resize => "none"],
+                    attrs![At::Id => "secret", At::Name => "secret", At::Rows => "10", At::Cols => "50", At::Value => model.get_secret(), At::ReadOnly => true]
                 ]
                 hr![],
                 IF!(model.secret.is_none() =>
-                    div![
-                        C!["row"],
-                        style![St::BorderSpacing => "0 0"],
+                    div![C!["row"], style![St::BorderSpacing => "0 0"],
                         IF!( model.config.password_required =>
-                            div![
-                                C!["3 col"], style![St::PaddingRight => em(1)],
-                                input![
+                            div![C!["3 col"], style![St::PaddingRight => em(1)],
+                                input![C!["card"],
                                     input_ev(Ev::Change, Msg::PasswordChanged),
-                                    C!["card"],
                                     attrs![At::Value => model.password, At::Type => "password", At::Name => "password", At::Placeholder => "Password required"]
                                 ],
                             ]
                         ),
                         div![C!["col"],
-                            button![
-                                C!["btn primary"],
+                            button![C!["btn primary"],
                                 input_ev(Ev::Click, |_| Msg::GetSecret),
                                 "Reveal"
                             ]
@@ -298,55 +287,37 @@ fn view(model: &SecretShare) -> Vec<Node<Msg>> {
             nodes![
                 h1!["Create new secret"],
                 p![&model.error],
-                textarea![
-                    input_ev(Ev::Input, Msg::SecretChanged),
-                    C!["card w-100"],
-                    style![St::Resize => "none"],
-                    attrs![At::MaxLength => model.config.max_length, At::Id => "secret", At::Name => "secret",  At::Rows => "10",  At::Cols => "50"]
+                textarea![C!["card w-100"], style![St::Resize => "none"],
+                    attrs![At::MaxLength => model.config.max_length, At::Id => "secret", At::Name => "secret",  At::Rows => "10",  At::Cols => "50"],
+                    input_ev(Ev::Input, Msg::SecretChanged)
                 ],
-                div![
-                    C!["row"],
-                    style![St::BorderSpacing => "0 0"],
-                    input![
-                        input_ev(Ev::Change, Msg::PasswordChanged),
-                        C!["card"],
-                        attrs![At::Value => model.password, At::Type => "password", At::Name => "password", At::Placeholder => "Optional password"]
+                div![C!["row"], style![St::BorderSpacing => "0 0"],
+                    input![C!["card"], attrs![At::Value => model.password, At::Type => "password", At::Name => "password", At::Placeholder => "Optional password"],
+                        input_ev(Ev::Change, Msg::PasswordChanged)
                     ],
-                    label![
-                        style![St::MarginLeft => em(1), St::Color => "#777"],
+                    label![style![St::MarginLeft => em(1), St::Color => "#777"],
                         "Lifetime:"
                     ],
-                    select![
+                    select![ C!["card w-10"], style![St::MarginLeft => em(1)],
                         input_ev(Ev::Change, Msg::LifetimeChanged),
-                        C!["card w-10"],
-                        style![St::MarginLeft => em(1)],
                         model.config.lifetimes.iter().map(|lt|
-                            option![attrs! {At::Value => lt.to_string(), At::Selected => (*lt == model.lifetime).as_at_value()}, lt.long_string()]
+                            option![attrs![At::Value => lt.to_string(), At::Selected => (*lt == model.lifetime).as_at_value()], lt.long_string()]
                         ),
                     ],
-                    p![
-                        C!["3 col"],
-                        style![St::TextAlign => St::Right, St::Color => "#aaa"],
+                    p![C!["3 col"], style![St::TextAlign => St::Right, St::Color => "#aaa"],
                         format!("{} / {}", model.get_secret().len(), model.config.max_length)
                     ]
                 ],
                 hr![],
                 div![
                     IF!(model.uuid.is_some() =>
-                        div![
-                            C!["row"],
-                            style![St::BorderSpacing => "0 0"],
-                            div![
-                                C!["10 col"],
-                                style![St::PaddingRight => em(1)],
+                        div![C!["row"], style![St::BorderSpacing => "0 0"],
+                            div![C!["10 col"], style![St::PaddingRight => em(1)],
                                 pre![model.url()]
                             ],
-                            div![
-                                C!["3 col"],
-                                button![
-                                    C!["card btn"],
+                            div![C!["3 col"],
+                                button![C!["card btn"], style![St::VerticalAlign => St::from("text-bottom"), St::Width => percent(100)],
                                     input_ev(Ev::Click, |_| Msg::CopyUrl),
-                                    style![St::VerticalAlign => St::from("text-bottom"), St::Width => percent(100)],
                                     model.clipboard_button_text.clone()
                                 ]
                             ]
@@ -354,9 +325,8 @@ fn view(model: &SecretShare) -> Vec<Node<Msg>> {
                     )
                 ],
                 IF!(model.uuid.is_none() =>
-                    button![
+                    button![C!["btn primary"],
                         input_ev(Ev::Click, |_| Msg::NewSecret),
-                        C!["btn primary"],
                         "Create"
                     ]
                 )
