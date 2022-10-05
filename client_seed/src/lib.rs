@@ -1,23 +1,28 @@
 use std::fmt::Display;
 
-use if_chain::if_chain;
+use byte_unit::Byte;
 use magic_crypt::{new_magic_crypt, MagicCryptTrait};
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
-use seed::nodes;
 use seed::{
     attrs, button, div, h1, h5, hr, input, label, option, p, pre, prelude::*, select, style,
     textarea, virtual_dom::Node, C, IF,
 };
+use seed::{nodes, JsFuture};
 use serde::{Deserialize, Serialize};
 use shared::{Config, Lifetime};
 use uuid::Uuid;
+use web_sys::{console, window, Clipboard, DragEvent, FileList};
 
-#[derive(Debug, Default)]
+#[derive(Default)]
 struct SecretShare {
     config: Config,
     encrypt_key: Option<String>,
     decrypt_key: Option<String>,
+
+    drop_zone_active: bool,
+    drop_zone_content: Vec<Node<Msg>>,
+    file_texts: Vec<Vec<u8>>,
 
     clipboard_button_text: String,
     uuid: Option<Uuid>,
@@ -55,6 +60,11 @@ enum Msg {
     GetSecret,
     CopyUrl,
     CopyResult(Result<JsValue, JsValue>),
+    DragEnter,
+    DragOver,
+    DragLeave,
+    Drop(FileList),
+    FileRead(String),
 }
 
 enum SecretShareError {
@@ -72,44 +82,39 @@ impl Display for SecretShareError {
 }
 
 fn get_uuid_and_hash(key_len: i32) -> Option<Result<(Uuid, String), SecretShareError>> {
-    if_chain! {
-        if let Some(document) = web_sys::window()?.document();
-        if let Ok(url) = document.url();
-        if let Ok(url) = web_sys::Url::new(&url);
+    let url = web_sys::window()
+        .and_then(|window| window.document())
+        .and_then(|document| document.url().ok())
+        .and_then(|url| web_sys::Url::new(&url).ok());
 
+    if let Some(url) = url {
         let pathname: String = url.pathname();
         let hash: String = url.hash();
 
-        if !pathname.is_empty();
-        // pathname contains / as first char
-        if let Ok(uuid) = Uuid::parse_str(&pathname[1..]);
-        then {
-            if hash.is_empty() {
-                Some(Err(SecretShareError::KeyMissing))
-            } else if (hash.len() - 1) != key_len as usize{
-                Some(Err(SecretShareError::InvalidKeyLength))
-            } else {
-                // hash contains # as first char
-                let hash = hash[1..].to_string();
-                Some(Ok((uuid, hash)))
-            }
+        let hash = if hash.is_empty() {
+            return Some(Err(SecretShareError::KeyMissing));
+        } else if (hash.len() - 1) != key_len as usize {
+            return Some(Err(SecretShareError::InvalidKeyLength));
         } else {
-            None
+            // hash contains # as first char
+            hash[1..].to_string()
+        };
+
+        if !pathname.is_empty() {
+            if let Ok(uuid) = Uuid::parse_str(&pathname[1..]) {
+                return Some(Ok((uuid, hash)));
+            }
         }
     }
+
+    None
 }
 
 fn init(_: Url, _: &mut impl Orders<Msg>) -> SecretShare {
-    let config = if_chain! {
-        if let Some(window) = web_sys::window();
-        if let Some(config) = window.get("config");
-        if let Ok(config) = serde_wasm_bindgen::from_value(config.into());
-        then {
-            config
-        }else {
-            Config::default()
-        }
-    };
+    let config: Config = window()
+        .and_then(|window| window.get("config"))
+        .and_then(|obj| serde_wasm_bindgen::from_value(obj.into()).ok())
+        .unwrap_or_default();
 
     let mut encrypt_key = None;
     let mut error = None;
@@ -225,14 +230,14 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
             }
         },
         Msg::CopyUrl => {
-            if let Some(window) = web_sys::window() {
+            if let Some(window) = window() {
                 let clipboard = window
                     .navigator()
                     .clipboard()
                     .expect("Could not access clipboard");
 
-                let promise = web_sys::Clipboard::write_text(&clipboard, &model.url());
-                let future = wasm_bindgen_futures::JsFuture::from(promise);
+                let promise = Clipboard::write_text(&clipboard, &model.url());
+                let future = JsFuture::from(promise);
 
                 orders.perform_cmd(async move { Msg::CopyResult(future.await) });
             }
@@ -244,7 +249,61 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
                 model.clipboard_button_text = "Failure! :(".into();
             }
         }
+        Msg::DragEnter => model.drop_zone_active = true,
+        Msg::DragOver => (),
+        Msg::DragLeave => model.drop_zone_active = false,
+        Msg::Drop(file_list) => {
+            model.drop_zone_active = false;
+            model.file_texts.clear();
+
+            // Note: `FileList` doesn't implement `Iterator`.
+            let files = (0..file_list.length())
+                .map(|index| file_list.get(index).expect("get file with given index"))
+                .collect::<Vec<_>>();
+
+            // Get file names.
+            model.drop_zone_content = files
+                .iter()
+                .map(|file| {
+                    let len = file.name().len();
+                    if len > 35 {
+                        let abbrev_name = file.name()[0..35].to_string();
+                        let ext = file.name()[(len - 3)..].to_string();
+                        div![format!("{}…{}", abbrev_name, ext)]
+                    } else {
+                        div![file.name()]
+                    }
+                })
+                .collect();
+
+            // Read files (async).
+            for file in files {
+                orders.perform_cmd(async move {
+                    let text =
+                        // Convert `promise` to `Future`.
+                        JsFuture::from(file.text())
+                            .await
+                            .expect("read file")
+                            .as_string()
+                            .expect("cast file text to String");
+                    Msg::FileRead(text)
+                });
+            }
+        }
+        Msg::FileRead(text) => {
+            console::log_1(&text.clone().into());
+            model.file_texts.push(text.as_bytes().to_vec())
+        }
     }
+}
+
+macro_rules! stop_and_prevent {
+    { $event:expr } => {
+        {
+            $event.stop_propagation();
+            $event.prevent_default();
+        }
+     };
 }
 
 fn view(model: &SecretShare) -> Vec<Node<Msg>> {
@@ -287,49 +346,105 @@ fn view(model: &SecretShare) -> Vec<Node<Msg>> {
             nodes![
                 h1!["Create new secret"],
                 p![&model.error],
-                textarea![C!["card w-100"], style![St::Resize => "none"],
-                    attrs![At::MaxLength => model.config.max_length, At::Id => "secret", At::Name => "secret",  At::Rows => "10",  At::Cols => "50"],
-                    input_ev(Ev::Input, Msg::SecretChanged)
+                div![C!["row"],
+                        textarea![C!["col 6 card w-100"], style![St::Resize => "none"],
+                            attrs![At::MaxLength => model.config.max_length, At::Id => "secret", At::Name => "secret",  At::Rows => "10",  At::Cols => "50"],
+                            input_ev(Ev::Input, Msg::SecretChanged)
+                        ],
+                        // the whole drop stuff is basically from here:
+                        // https://github.com/seed-rs/seed/blob/4096a77a79e3a15fc12d2ea864e0e1d51a8f3638/examples/drop_zone/src/lib.rs
+                        div![C!["col 6 card w-50"], style![St::BorderStyle => "dashed", St::BorderRadius => px(20),
+                                                           St::Background => if model.drop_zone_active { "pink" } else { "white" }],
+                            ev(Ev::DragEnter, |event| {
+                                stop_and_prevent!(event);
+                                Msg::DragEnter
+                            }),
+                            ev(Ev::DragOver, |event| {
+                                let drag_event = event.dyn_into::<DragEvent>().expect("cannot cast given event into DragEvent");
+                                stop_and_prevent!(drag_event);
+                                drag_event.data_transfer().unwrap().set_drop_effect("copy");
+                                Msg::DragOver
+                            }),
+                            ev(Ev::DragLeave, |event| {
+                                stop_and_prevent!(event);
+                                Msg::DragLeave
+                            }),
+                            ev(Ev::Drop, |event| {
+                                let drag_event = event.dyn_into::<DragEvent>().expect("cannot cast given event into DragEvent");
+                                stop_and_prevent!(drag_event);
+                                let file_list = drag_event.data_transfer().unwrap().files().unwrap();
+                                Msg::Drop(file_list)
+                            }),
+                            div![style! { St::PointerEvents => "none", St::Float => "left",},
+                                model.drop_zone_content.clone(),
+                            ],
+                        ]
                 ],
-                div![C!["row"], style![St::BorderSpacing => "0 0"],
-                    input![C!["card"], attrs![At::Value => model.password, At::Type => "password", At::Name => "password", At::Placeholder => "Optional password"],
-                        input_ev(Ev::Change, Msg::PasswordChanged)
+                div![C!["row"],
+                    // input![C!["card"], attrs![At::Value => model.password, At::Type => "password", At::Name => "password", At::Placeholder => "Optional password"],
+                    //     input_ev(Ev::Change, Msg::PasswordChanged)
+                    // ],
+                    // label![style![St::MarginLeft => em(1), St::Color => "#777"],
+                    //     "Lifetime:"
+                    // ],
+                    // select![ C!["card w-10"], style![St::MarginLeft => em(1)],
+                    //     input_ev(Ev::Change, Msg::LifetimeChanged),
+                    //     model.config.lifetimes.iter().map(|lt|
+                    //         option![attrs![At::Value => lt.to_string(), At::Selected => (*lt == model.lifetime).as_at_value()], lt.long_string()],
+                    //     ),
+                    // ],
+                    p![C!["3 col"], style![St::TextAlign => St::Left, St::Color => "#aaa"],
+                        format!("Text: {} / {}", model.get_secret().len(), model.config.max_length),
                     ],
-                    label![style![St::MarginLeft => em(1), St::Color => "#777"],
-                        "Lifetime:"
+                    p![C!["2 col"], style![St::TextAlign => "center", St::Color => "#aaa"],
+                        format!("Files: {} / {}", model.drop_zone_content.len(), model.config.max_files)
                     ],
-                    select![ C!["card w-10"], style![St::MarginLeft => em(1)],
-                        input_ev(Ev::Change, Msg::LifetimeChanged),
-                        model.config.lifetimes.iter().map(|lt|
-                            option![attrs![At::Value => lt.to_string(), At::Selected => (*lt == model.lifetime).as_at_value()], lt.long_string()]
-                        ),
-                    ],
-                    p![C!["3 col"], style![St::TextAlign => St::Right, St::Color => "#aaa"],
-                        format!("{} / {}", model.get_secret().len(), model.config.max_length)
+                    p![C!["2 col"], style![St::TextAlign => St::Right, St::Color => "#aaa"],
+                        {let curr_size = Byte::from_bytes(model.file_texts.iter().fold(0, |acc, x| acc + x.len() as u128)).get_appropriate_unit(true);
+                         let max_size = Byte::from_bytes(model.config.max_files_size).get_appropriate_unit(true);
+                         format!("Max Size: {} / {}", curr_size, max_size)
+                        }
                     ]
                 ],
-                hr![],
-                div![
-                    IF!(model.uuid.is_some() =>
-                        div![C!["row"], style![St::BorderSpacing => "0 0"],
-                            div![C!["10 col"], style![St::PaddingRight => em(1)],
-                                pre![model.url()]
-                            ],
-                            div![C!["3 col"],
-                                button![C!["card btn"], style![St::VerticalAlign => St::from("text-bottom"), St::Width => percent(100)],
-                                    input_ev(Ev::Click, |_| Msg::CopyUrl),
-                                    model.clipboard_button_text.clone()
+                div![C!["row"],
+                    hr![],
+                    div![
+                        IF!(model.uuid.is_some() =>
+                            div![C!["row"],
+                                div![C!["10 col"], style![St::PaddingRight => em(1)],
+                                    pre![model.url()]
+                                ],
+                                div![C!["3 col"],
+                                    button![C!["card btn"], style![St::VerticalAlign => St::from("text-bottom"), St::Width => percent(100)],
+                                        input_ev(Ev::Click, |_| Msg::CopyUrl),
+                                        model.clipboard_button_text.clone()
+                                    ]
                                 ]
+                            ]
+                        )
+                    ],
+                    IF!(model.uuid.is_none() =>
+                        nodes![
+                            input![C!["card"], attrs![At::Value => model.password, At::Type => "password", At::Name => "password", At::Placeholder => "Optional password"],
+                                input_ev(Ev::Change, Msg::PasswordChanged)
+                            ],
+                            label![style![St::MarginLeft => em(1), St::Color => "#777"],
+                                "Lifetime:"
+                            ],
+                            select![ C!["card w-10"], style![St::MarginLeft => em(1)],
+                                input_ev(Ev::Change, Msg::LifetimeChanged),
+                                model.config.lifetimes.iter().map(|lt|
+                                    {console::log_1(&lt.long_string().into());
+                                    option![attrs![At::Value => lt.to_string(), At::Selected => (*lt == model.lifetime).as_at_value()], lt.long_string()]}
+                                ),
+                            ],
+                            button![C!["btn primary"], style!(St::Float => St::Right),
+                                input_ev(Ev::Click, |_| Msg::NewSecret),
+                                "Create"
                             ]
                         ]
                     )
-                ],
-                IF!(model.uuid.is_none() =>
-                    button![C!["btn primary"],
-                        input_ev(Ev::Click, |_| Msg::NewSecret),
-                        "Create"
-                    ]
-                )
+                ]
             ]
         )
     ]]

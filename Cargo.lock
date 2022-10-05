@@ -607,6 +607,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63396b8a4b9de3f4fdfb320ab6080762242f66a8ef174c49d8e19b674db4cdbe"
 
 [[package]]
+name = "byte-unit"
+version = "4.0.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "95ebf10dda65f19ff0f42ea15572a359ed60d7fc74fdc984d90310937be0014b"
+dependencies = [
+ "utf8-width",
+]
+
+[[package]]
 name = "byteorder"
 version = "1.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -693,7 +702,7 @@ name = "client_seed"
 version = "0.1.0"
 dependencies = [
  "askama 0.11.1",
- "if_chain",
+ "byte-unit",
  "magic-crypt",
  "rand",
  "seed",
@@ -1812,6 +1821,7 @@ dependencies = [
  "anyhow",
  "askama 0.11.2",
  "bcrypt",
+ "byte-unit",
  "cfg-if",
  "env_logger",
  "lazy_static",
@@ -1937,6 +1947,7 @@ dependencies = [
 name = "shared"
 version = "0.1.0"
 dependencies = [
+ "byte-unit",
  "serde",
  "serde_json",
  "uuid",
@@ -2181,6 +2192,12 @@ dependencies = [
  "matches",
  "percent-encoding",
 ]
+
+[[package]]
+name = "utf8-width"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5190c9442dcdaf0ddd50f37420417d219ae5261bbf5db120d0f9bab996c9cba1"
 
 [[package]]
 name = "uuid"

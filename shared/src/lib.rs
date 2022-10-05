@@ -123,6 +123,8 @@ pub struct Config {
     pub max_length: i32,
     pub password_required: bool,
     pub lifetimes: Vec<Lifetime>,
+    pub max_files: i32,
+    pub max_files_size: u128,
 }
 
 impl Default for Config {
@@ -134,6 +136,8 @@ impl Default for Config {
             max_length: 10000,
             password_required: false,
             lifetimes: vec![Lifetime::Days(7)],
+            max_files: 5,
+            max_files_size: byte_unit::n_mib_bytes!(25),
         }
     }
 }

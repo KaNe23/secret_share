@@ -21,5 +21,9 @@ Inspired by [onetimesecret](https://github.com/onetimesecret/onetimesecret)
 
 ![reveal_secret](https://github.com/KaNe23/secret_share/blob/master/pictures/reveal_secret.png?raw=true)
 
+### CSS Used
+
+https://ajusa.github.io/lit/
+
 ### Todo:
 - add env vars for AES key length

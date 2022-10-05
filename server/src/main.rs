@@ -64,6 +64,26 @@ lazy_static! {
         Lifetime::Minutes(5),
     ];
 
+    static ref MAX_FILES: i32 = if let Ok(max_files) = std::env::var("MAX_FILES") {
+        if let Ok(max_files) = i32::from_str(&max_files) {
+            max_files
+        } else {
+            5
+        }
+    }else{
+        5
+    };
+
+    static ref MAX_FILES_SIZE: u128 = if let Ok(max_files_size) = std::env::var("MAX_FILES_SIZE") {
+        if let Ok(max_files_size) = byte_unit::Byte::from_str(max_files_size) {
+            max_files_size.get_bytes()
+        } else {
+            byte_unit::n_mib_bytes!(25)
+        }
+    }else{
+        byte_unit::n_mib_bytes!(25)
+    };
+
     // static ref LIFETIMES: Vec<String> = DEFAULT_LIFETIMES.iter().map(|ele| ele.0.clone()).collect::<Vec<String>>();
 }
 
@@ -140,6 +160,8 @@ fn render_index_page(error: String, password_required: bool) -> impl Responder {
             max_length: *MAX_LENGTH,
             password_required,
             lifetimes: DEFAULT_LIFETIMES.clone(),
+            max_files: *MAX_FILES,
+            max_files_size: *MAX_FILES_SIZE,
         }),
     };
 
