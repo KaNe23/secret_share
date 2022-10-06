@@ -115,7 +115,7 @@ pub enum Response {
     Uuid(Uuid),
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Config {
     pub error: String,
     pub base_url: String,

@@ -25,34 +25,25 @@ lazy_static! {
     } else {
         "redis://127.0.0.1/".to_string()
     };
-    static ref MAX_LENGTH: i32 = if let Ok(max_length) = std::env::var("MAX_LENGTH") {
-        if let Ok(max_length) = max_length.parse() {
-            max_length
-        } else {
-            10000
-        }
-    } else {
-        10000
-    };
+
+    static ref MAX_LENGTH: i32 = std::env::var("MAX_LENGTH").ok().and_then(|max_length| max_length.parse().ok()).unwrap_or(10000);
+
     static ref BASE_URL: String = if let Ok(base_url) = std::env::var("BASE_URL") {
         base_url
     } else {
         "http://localhost:8080".to_string()
     };
+
     static ref PORT: String = if let Ok(port) = std::env::var("PORT") {
         port
     } else {
         "8080".to_string()
     };
-    static ref KEY_LENGTH: i32 = if let Ok(key_len) = std::env::var("KEY_LENGTH") {
-        if let Ok(key_len) = i32::from_str(&key_len) {
-            key_len
-        } else {
-            16
-        }
-    } else {
-        16
-    };
+
+    static ref KEY_LENGTH: i32 = std::env::var("KEY_LENGTH").ok()
+        .and_then(|key_len| i32::from_str(&key_len).ok())
+        .unwrap_or(16);
+
     static ref DEFAULT_LIFETIMES: Vec<Lifetime> = vec![
         Lifetime::Days(7),
         Lifetime::Days(3),
@@ -64,25 +55,14 @@ lazy_static! {
         Lifetime::Minutes(5),
     ];
 
-    static ref MAX_FILES: i32 = if let Ok(max_files) = std::env::var("MAX_FILES") {
-        if let Ok(max_files) = i32::from_str(&max_files) {
-            max_files
-        } else {
-            5
-        }
-    }else{
-        5
-    };
+    static ref MAX_FILES: i32 = std::env::var("MAX_FILES").ok()
+        .and_then(|max_files| i32::from_str(&max_files).ok())
+        .unwrap_or(5);
 
-    static ref MAX_FILES_SIZE: u128 = if let Ok(max_files_size) = std::env::var("MAX_FILES_SIZE") {
-        if let Ok(max_files_size) = byte_unit::Byte::from_str(max_files_size) {
-            max_files_size.get_bytes()
-        } else {
-            byte_unit::n_mib_bytes!(25)
-        }
-    }else{
-        byte_unit::n_mib_bytes!(25)
-    };
+    static ref MAX_FILES_SIZE: u128 = std::env::var("MAX_FILES_SIZE").ok()
+        .and_then(|max_files_size| byte_unit::Byte::from_str(max_files_size).ok())
+        .and_then(|max_files_size| Some(max_files_size.get_bytes()))
+        .unwrap_or(byte_unit::n_mib_bytes!(25));
 
     // static ref LIFETIMES: Vec<String> = DEFAULT_LIFETIMES.iter().map(|ele| ele.0.clone()).collect::<Vec<String>>();
 }

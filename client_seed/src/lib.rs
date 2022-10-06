@@ -1,5 +1,7 @@
+use std::collections::HashMap;
 use std::fmt::Display;
 
+use askama::filters::format;
 use byte_unit::Byte;
 use magic_crypt::{new_magic_crypt, MagicCryptTrait};
 use rand::distributions::Alphanumeric;
@@ -21,8 +23,8 @@ struct SecretShare {
     decrypt_key: Option<String>,
 
     drop_zone_active: bool,
-    drop_zone_content: Vec<Node<Msg>>,
-    file_texts: Vec<Vec<u8>>,
+    // drop_zone_content: Vec<Node<Msg>>,
+    files: HashMap<String, (u128, Vec<u8>)>,
 
     clipboard_button_text: String,
     uuid: Option<Uuid>,
@@ -49,6 +51,21 @@ impl SecretShare {
             "".to_string()
         }
     }
+
+    fn file_names(&self) -> Vec<(String, String)> {
+        self.files
+            .iter()
+            .map(|(file_name, _)| {
+                if file_name.len() > 35 {
+                    let abbrev_name = file_name[0..35].to_string();
+                    let ext = file_name[(file_name.len() - 3)..].to_string();
+                    (file_name.clone(), format!("{}…{}", abbrev_name, ext))
+                } else {
+                    (file_name.clone(), file_name.clone())
+                }
+            })
+            .collect()
+    }
 }
 
 enum Msg {
@@ -64,7 +81,8 @@ enum Msg {
     DragOver,
     DragLeave,
     Drop(FileList),
-    FileRead(String),
+    FileRead((String, u128, Vec<u8>)),
+    RemoveFile(String),
 }
 
 enum SecretShareError {
@@ -113,7 +131,11 @@ fn get_uuid_and_hash(key_len: i32) -> Option<Result<(Uuid, String), SecretShareE
 fn init(_: Url, _: &mut impl Orders<Msg>) -> SecretShare {
     let config: Config = window()
         .and_then(|window| window.get("config"))
-        .and_then(|obj| serde_wasm_bindgen::from_value(obj.into()).ok())
+        .and_then(|obj| {
+            // the new recommanded way has some problem with the u128
+            // serde_wasm_bindgen::from_value(obj.into()).ok()
+            obj.into_serde::<shared::Config>().ok()
+        })
         .unwrap_or_default();
 
     let mut encrypt_key = None;
@@ -172,6 +194,7 @@ where
 }
 
 fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
+    model.error = None;
     match msg {
         Msg::LifetimeChanged(lifetime) => {
             model.lifetime = lifetime.parse().expect("Invalid Lifetime")
@@ -250,55 +273,50 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
             }
         }
         Msg::DragEnter => model.drop_zone_active = true,
-        Msg::DragOver => (),
         Msg::DragLeave => model.drop_zone_active = false,
+        Msg::DragOver => (),
         Msg::Drop(file_list) => {
-            model.drop_zone_active = false;
-            // model.file_texts.clear();
-
             // Note: `FileList` doesn't implement `Iterator`.
             let files = (0..file_list.length())
                 .map(|index| file_list.get(index).expect("get file with given index"))
                 .collect::<Vec<_>>();
-
-            if files.len() + model.file_texts.len() > model.config.max_files as usize{
-                model.error = Some(format!("Too many file, only {} allowed.", model.config.max_files));
+            if files.len() + model.files.len() > model.config.max_files as usize {
+                model.drop_zone_active = false;
+                model.error = Some(format!("Only {} files allowed.", model.config.max_files));
                 return;
             }
-
-
-            // Get file names.
-            model.drop_zone_content = files
-                .iter()
-                .map(|file| {
-                    let len = file.name().len();
-                    if len > 35 {
-                        let abbrev_name = file.name()[0..35].to_string();
-                        let ext = file.name()[(len - 3)..].to_string();
-                        div![format!("{}…{}", abbrev_name, ext)]
-                    } else {
-                        div![file.name()]
-                    }
-                })
-                .collect();
-
+            let new_files_size = files.iter().fold(0, |acc, file| acc + file.size() as u128);
+            let current_files_size = model.files.iter().fold(0, |acc, (_, (size, _))| acc + size);
+            if new_files_size + current_files_size > model.config.max_files_size {
+                model.drop_zone_active = false;
+                let max_size =
+                    Byte::from_bytes(model.config.max_files_size).get_appropriate_unit(true);
+                model.error = Some(format!("Max acc. file size of {} exceeded.", max_size));
+                return;
+            }
             // Read files (async).
             for file in files {
                 orders.perform_cmd(async move {
-                    let text =
+                    let content =
                         // Convert `promise` to `Future`.
                         JsFuture::from(file.text())
                             .await
                             .expect("read file")
                             .as_string()
-                            .expect("cast file text to String");
-                    Msg::FileRead(text)
+                            .expect("cast file text to String")
+                            .as_bytes()
+                            .to_vec();
+                    Msg::FileRead((file.name(), file.size() as u128, content))
                 });
             }
         }
-        Msg::FileRead(text) => {
-            console::log_1(&text.clone().into());
-            model.file_texts.push(text.as_bytes().to_vec())
+        Msg::FileRead((file_name, size, content)) => {
+            console::log_1(&"7".into());
+            model.files.insert(file_name, (size, content));
+            model.drop_zone_active = false;
+        }
+        Msg::RemoveFile(file_name) => {
+            model.files.remove(&file_name);
         }
     }
 }
@@ -352,7 +370,7 @@ fn view(model: &SecretShare) -> Vec<Node<Msg>> {
             nodes![
                 div![C!["row"],
                     h1!["Create new secret"],
-                    p![&model.error],
+                    p![&model.error, " "], // invesible char to keep the element height the same
                 ],
                 div![C!["row"],
                     textarea![C!["col 6 card w-100"], style![St::Resize => "none"],
@@ -361,8 +379,9 @@ fn view(model: &SecretShare) -> Vec<Node<Msg>> {
                     ],
                     // the whole drop stuff is basically from here:
                     // https://github.com/seed-rs/seed/blob/4096a77a79e3a15fc12d2ea864e0e1d51a8f3638/examples/drop_zone/src/lib.rs
-                    div![C!["col 6 card w-50"], style![St::BorderStyle => "dashed", St::BorderRadius => px(20),
-                                                       St::Background => if model.drop_zone_active { "pink" } else { "white" }],
+                    div![C![if model.drop_zone_active || !model.files.is_empty() { "col 6 card w-50" } else { "col 3 card w-50" }],
+                            style![St::BorderStyle => "dashed", St::BorderRadius => px(20), St::Background => if model.drop_zone_active { "pink" } else { "white" },
+                            St::Transition => "width 0.5s ease-out"],
                         ev(Ev::DragEnter, |event| {
                             stop_and_prevent!(event);
                             Msg::DragEnter
@@ -383,36 +402,38 @@ fn view(model: &SecretShare) -> Vec<Node<Msg>> {
                             let file_list = drag_event.data_transfer().unwrap().files().unwrap();
                             Msg::Drop(file_list)
                         }),
-                        div![style![St::PointerEvents => "none", St::Float => "left"],
-                            model.drop_zone_content.clone(),
+                        div![style![
+                            // St::PointerEvents => "none"
+                            St::Float => "left"],
+                            model.file_names().iter().map(|(name, abbr_name)|
+                                div![
+                                    div![style![St::Float => "Left", St::Cursor => "pointer", St::PaddingRight => px(5)],
+                                    {
+                                        let file_name = name.clone();
+                                        ev(Ev::Click, |_| Msg::RemoveFile(file_name))
+                                    },
+                                        "❌"
+                                    ],
+                                    abbr_name
+                                ]
+                            ).collect::<Vec<_>>()
                         ],
                     ]
                 ],
                 div![C!["row"],
-                    // input![C!["card"], attrs![At::Value => model.password, At::Type => "password", At::Name => "password", At::Placeholder => "Optional password"],
-                    //     input_ev(Ev::Change, Msg::PasswordChanged)
-                    // ],
-                    // label![style![St::MarginLeft => em(1), St::Color => "#777"],
-                    //     "Lifetime:"
-                    // ],
-                    // select![ C!["card w-10"], style![St::MarginLeft => em(1)],
-                    //     input_ev(Ev::Change, Msg::LifetimeChanged),
-                    //     model.config.lifetimes.iter().map(|lt|
-                    //         option![attrs![At::Value => lt.to_string(), At::Selected => (*lt == model.lifetime).as_at_value()], lt.long_string()],
-                    //     ),
-                    // ],
-                    p![C!["3 col"], style![St::TextAlign => St::Left, St::Color => "#aaa"],
+                    p![C!["4 col"], style![St::TextAlign => St::Left, St::Color => "#aaa"],
                         format!("Text: {} / {}", model.get_secret().len(), model.config.max_length),
                     ],
-                    p![C!["2 col"], style![St::TextAlign => "center", St::Color => "#aaa"],
-                        format!("Files: {} / {}", model.drop_zone_content.len(), model.config.max_files)
+                    p![C!["2 col"], style![St::TextAlign => if !model.files.is_empty() { "center".into() } else { St::Right }, St::Color => "#aaa"],
+                        format!("Files: {} / {}", model.files.len(), model.config.max_files)
                     ],
-                    p![C!["2 col"], style![St::TextAlign => St::Right, St::Color => "#aaa"],
-                        {let curr_size = Byte::from_bytes(model.file_texts.iter().fold(0, |acc, x| acc + x.len() as u128)).get_appropriate_unit(true);
-                         let max_size = Byte::from_bytes(model.config.max_files_size).get_appropriate_unit(true);
-                         format!("Max Size: {} / {}", curr_size, max_size)
-                        }
-                    ]
+                    IF!(!model.files.is_empty() =>
+                        p![C!["3 col"], style![St::TextAlign => St::Right, St::Color => "#aaa"],
+                            {let curr_size = Byte::from_bytes(model.files.iter().fold(0, |acc, (_, (x, _))| acc + *x as u128));
+                            let max_size = Byte::from_bytes(model.config.max_files_size as u128).get_appropriate_unit(true);
+                            format!("Max Size: {} / {}", curr_size.get_appropriate_unit(true), max_size)}
+                        ]
+                    )
                 ],
                 div![C!["row"],
                     hr![],
@@ -442,8 +463,7 @@ fn view(model: &SecretShare) -> Vec<Node<Msg>> {
                             select![ C!["card w-10"], style![St::MarginLeft => em(1)],
                                 input_ev(Ev::Change, Msg::LifetimeChanged),
                                 model.config.lifetimes.iter().map(|lt|
-                                    {console::log_1(&lt.long_string().into());
-                                    option![attrs![At::Value => lt.to_string(), At::Selected => (*lt == model.lifetime).as_at_value()], lt.long_string()]}
+                                    option![attrs![At::Value => lt.to_string(), At::Selected => (*lt == model.lifetime).as_at_value()], lt.long_string()]
                                 ),
                             ],
                             button![C!["btn primary"], style!(St::Float => St::Right),
