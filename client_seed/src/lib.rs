@@ -91,17 +91,17 @@ fn get_uuid_and_hash(key_len: i32) -> Option<Result<(Uuid, String), SecretShareE
         let pathname: String = url.pathname();
         let hash: String = url.hash();
 
-        let hash = if hash.is_empty() {
-            return Some(Err(SecretShareError::KeyMissing));
-        } else if (hash.len() - 1) != key_len as usize {
-            return Some(Err(SecretShareError::InvalidKeyLength));
-        } else {
-            // hash contains # as first char
-            hash[1..].to_string()
-        };
-
         if !pathname.is_empty() {
             if let Ok(uuid) = Uuid::parse_str(&pathname[1..]) {
+                let hash = if hash.is_empty() {
+                    return Some(Err(SecretShareError::KeyMissing));
+                } else if (hash.len() - 1) != key_len as usize {
+                    return Some(Err(SecretShareError::InvalidKeyLength));
+                } else {
+                    // hash contains # as first char
+                    hash[1..].to_string()
+                };
+
                 return Some(Ok((uuid, hash)));
             }
         }
@@ -254,12 +254,18 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
         Msg::DragLeave => model.drop_zone_active = false,
         Msg::Drop(file_list) => {
             model.drop_zone_active = false;
-            model.file_texts.clear();
+            // model.file_texts.clear();
 
             // Note: `FileList` doesn't implement `Iterator`.
             let files = (0..file_list.length())
                 .map(|index| file_list.get(index).expect("get file with given index"))
                 .collect::<Vec<_>>();
+
+            if files.len() + model.file_texts.len() > model.config.max_files as usize{
+                model.error = Some(format!("Too many file, only {} allowed.", model.config.max_files));
+                return;
+            }
+
 
             // Get file names.
             model.drop_zone_content = files
@@ -344,41 +350,43 @@ fn view(model: &SecretShare) -> Vec<Node<Msg>> {
         // secret creation
         IF!(model.encrypt_key.is_some() =>
             nodes![
-                h1!["Create new secret"],
-                p![&model.error],
                 div![C!["row"],
-                        textarea![C!["col 6 card w-100"], style![St::Resize => "none"],
-                            attrs![At::MaxLength => model.config.max_length, At::Id => "secret", At::Name => "secret",  At::Rows => "10",  At::Cols => "50"],
-                            input_ev(Ev::Input, Msg::SecretChanged)
+                    h1!["Create new secret"],
+                    p![&model.error],
+                ],
+                div![C!["row"],
+                    textarea![C!["col 6 card w-100"], style![St::Resize => "none"],
+                        attrs![At::MaxLength => model.config.max_length, At::Id => "secret", At::Name => "secret",  At::Rows => "10",  At::Cols => "50"],
+                        input_ev(Ev::Input, Msg::SecretChanged)
+                    ],
+                    // the whole drop stuff is basically from here:
+                    // https://github.com/seed-rs/seed/blob/4096a77a79e3a15fc12d2ea864e0e1d51a8f3638/examples/drop_zone/src/lib.rs
+                    div![C!["col 6 card w-50"], style![St::BorderStyle => "dashed", St::BorderRadius => px(20),
+                                                       St::Background => if model.drop_zone_active { "pink" } else { "white" }],
+                        ev(Ev::DragEnter, |event| {
+                            stop_and_prevent!(event);
+                            Msg::DragEnter
+                        }),
+                        ev(Ev::DragOver, |event| {
+                            let drag_event = event.dyn_into::<DragEvent>().expect("cannot cast given event into DragEvent");
+                            stop_and_prevent!(drag_event);
+                            drag_event.data_transfer().unwrap().set_drop_effect("copy");
+                            Msg::DragOver
+                        }),
+                        ev(Ev::DragLeave, |event| {
+                            stop_and_prevent!(event);
+                            Msg::DragLeave
+                        }),
+                        ev(Ev::Drop, |event| {
+                            let drag_event = event.dyn_into::<DragEvent>().expect("cannot cast given event into DragEvent");
+                            stop_and_prevent!(drag_event);
+                            let file_list = drag_event.data_transfer().unwrap().files().unwrap();
+                            Msg::Drop(file_list)
+                        }),
+                        div![style![St::PointerEvents => "none", St::Float => "left"],
+                            model.drop_zone_content.clone(),
                         ],
-                        // the whole drop stuff is basically from here:
-                        // https://github.com/seed-rs/seed/blob/4096a77a79e3a15fc12d2ea864e0e1d51a8f3638/examples/drop_zone/src/lib.rs
-                        div![C!["col 6 card w-50"], style![St::BorderStyle => "dashed", St::BorderRadius => px(20),
-                                                           St::Background => if model.drop_zone_active { "pink" } else { "white" }],
-                            ev(Ev::DragEnter, |event| {
-                                stop_and_prevent!(event);
-                                Msg::DragEnter
-                            }),
-                            ev(Ev::DragOver, |event| {
-                                let drag_event = event.dyn_into::<DragEvent>().expect("cannot cast given event into DragEvent");
-                                stop_and_prevent!(drag_event);
-                                drag_event.data_transfer().unwrap().set_drop_effect("copy");
-                                Msg::DragOver
-                            }),
-                            ev(Ev::DragLeave, |event| {
-                                stop_and_prevent!(event);
-                                Msg::DragLeave
-                            }),
-                            ev(Ev::Drop, |event| {
-                                let drag_event = event.dyn_into::<DragEvent>().expect("cannot cast given event into DragEvent");
-                                stop_and_prevent!(drag_event);
-                                let file_list = drag_event.data_transfer().unwrap().files().unwrap();
-                                Msg::Drop(file_list)
-                            }),
-                            div![style! { St::PointerEvents => "none", St::Float => "left",},
-                                model.drop_zone_content.clone(),
-                            ],
-                        ]
+                    ]
                 ],
                 div![C!["row"],
                     // input![C!["card"], attrs![At::Value => model.password, At::Type => "password", At::Name => "password", At::Placeholder => "Optional password"],
