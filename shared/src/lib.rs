@@ -1,6 +1,6 @@
 use core::fmt;
 use serde::{Deserialize, Serialize};
-use std::{fmt::Display, num::ParseIntError, str::FromStr};
+use std::{collections::HashMap, fmt::Display, num::ParseIntError, str::FromStr};
 use uuid::Uuid;
 
 #[derive(Serialize, Deserialize)]
@@ -9,6 +9,7 @@ pub enum Request {
         encrypted_secret: String,
         password: Option<String>,
         lifetime: Lifetime,
+        files: HashMap<String, (u128, Vec<u8>)>, // file_name => (size, data)
     },
     GetSecret {
         uuid: Uuid,

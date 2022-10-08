@@ -1,20 +1,19 @@
 use std::collections::HashMap;
 use std::fmt::Display;
 
-use askama::filters::format;
 use byte_unit::Byte;
-use magic_crypt::{new_magic_crypt, MagicCryptTrait};
+use magic_crypt::{new_magic_crypt, MagicCrypt256, MagicCryptTrait};
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use seed::{
     attrs, button, div, h1, h5, hr, input, label, option, p, pre, prelude::*, select, style,
     textarea, virtual_dom::Node, C, IF,
 };
-use seed::{nodes, JsFuture};
+use seed::{nodes, window, JsFuture};
 use serde::{Deserialize, Serialize};
 use shared::{Config, Lifetime};
 use uuid::Uuid;
-use web_sys::{console, window, Clipboard, DragEvent, FileList};
+use web_sys::{console, Clipboard, DragEvent, FileList};
 
 #[derive(Default)]
 struct SecretShare {
@@ -23,8 +22,10 @@ struct SecretShare {
     decrypt_key: Option<String>,
 
     drop_zone_active: bool,
-    // drop_zone_content: Vec<Node<Msg>>,
     files: HashMap<String, (u128, Vec<u8>)>,
+    encrypted_files: HashMap<String, (u128, Vec<u8>)>,
+    mc: Option<MagicCrypt256>,
+    encryption_in_progress: Option<(u128, u128)>,
 
     clipboard_button_text: String,
     uuid: Option<Uuid>,
@@ -66,6 +67,10 @@ impl SecretShare {
             })
             .collect()
     }
+
+    fn get_crypt(&self) -> &MagicCrypt256 {
+        self.mc.as_ref().expect("no crypt set")
+    }
 }
 
 enum Msg {
@@ -83,6 +88,7 @@ enum Msg {
     Drop(FileList),
     FileRead((String, u128, Vec<u8>)),
     RemoveFile(String),
+    EncryptFiles(usize, usize),
 }
 
 enum SecretShareError {
@@ -130,7 +136,7 @@ fn get_uuid_and_hash(key_len: i32) -> Option<Result<(Uuid, String), SecretShareE
 
 fn init(_: Url, _: &mut impl Orders<Msg>) -> SecretShare {
     let config: Config = window()
-        .and_then(|window| window.get("config"))
+        .get("config")
         .and_then(|obj| {
             // the new recommanded way has some problem with the u128
             // serde_wasm_bindgen::from_value(obj.into()).ok()
@@ -161,11 +167,19 @@ fn init(_: Url, _: &mut impl Orders<Msg>) -> SecretShare {
                         .sample_iter(Alphanumeric)
                         .take(config.key_length as usize)
                         .map(char::from)
-                        .collect(),
+                        .collect::<String>(),
                 );
             }
         }
     }
+
+    let mc = if let Some(key) = encrypt_key.clone() {
+        Some(new_magic_crypt!(key, 256, "AES"))
+    } else {
+        decrypt_key
+            .clone()
+            .map(|key| new_magic_crypt!(key, 256, "AES"))
+    };
 
     SecretShare {
         config,
@@ -173,6 +187,7 @@ fn init(_: Url, _: &mut impl Orders<Msg>) -> SecretShare {
         error,
         decrypt_key,
         uuid,
+        mc,
         clipboard_button_text: "Copy to Clipboard.".into(),
         ..Default::default()
     }
@@ -202,9 +217,7 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
         Msg::SecretChanged(secret) => model.secret = Some(secret),
         Msg::PasswordChanged(password) => model.password = password,
         Msg::NewSecret => {
-            let mc = new_magic_crypt!(&model.encrypt_key.as_ref().expect("No key set"), 256, "AES");
-
-            let encrypted_secret = mc.encrypt_str_to_base64(model.get_secret());
+            let encrypted_secret = model.get_crypt().encrypt_str_to_base64(model.get_secret());
 
             let password = if model.password.is_empty() {
                 None
@@ -216,6 +229,7 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
                 encrypted_secret,
                 password,
                 lifetime: model.lifetime,
+                files: model.encrypted_files.clone(),
             };
 
             orders.perform_cmd(async move {
@@ -235,13 +249,7 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
             Ok(response) => match response {
                 shared::Response::Uuid(uuid) => model.uuid = Some(uuid),
                 shared::Response::Secret(encrypted_secret) => {
-                    let mc = new_magic_crypt!(
-                        &model.decrypt_key.as_ref().expect("No key set"),
-                        256,
-                        "AES"
-                    );
-
-                    match mc.decrypt_base64_to_string(encrypted_secret) {
+                    match model.get_crypt().decrypt_base64_to_string(encrypted_secret) {
                         Ok(secret) => model.secret = Some(secret),
                         Err(e) => model.error = Some(e.to_string()),
                     }
@@ -253,17 +261,15 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
             }
         },
         Msg::CopyUrl => {
-            if let Some(window) = window() {
-                let clipboard = window
-                    .navigator()
-                    .clipboard()
-                    .expect("Could not access clipboard");
+            let clipboard = window()
+                .navigator()
+                .clipboard()
+                .expect("Could not access clipboard");
 
-                let promise = Clipboard::write_text(&clipboard, &model.url());
-                let future = JsFuture::from(promise);
+            let promise = Clipboard::write_text(&clipboard, &model.url());
+            let future = JsFuture::from(promise);
 
-                orders.perform_cmd(async move { Msg::CopyResult(future.await) });
-            }
+            orders.perform_cmd(async move { Msg::CopyResult(future.await) });
         }
         Msg::CopyResult(result) => {
             if result.is_ok() {
@@ -280,11 +286,13 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
             let files = (0..file_list.length())
                 .map(|index| file_list.get(index).expect("get file with given index"))
                 .collect::<Vec<_>>();
+
             if files.len() + model.files.len() > model.config.max_files as usize {
                 model.drop_zone_active = false;
                 model.error = Some(format!("Only {} files allowed.", model.config.max_files));
                 return;
             }
+
             let new_files_size = files.iter().fold(0, |acc, file| acc + file.size() as u128);
             let current_files_size = model.files.iter().fold(0, |acc, (_, (size, _))| acc + size);
             if new_files_size + current_files_size > model.config.max_files_size {
@@ -311,12 +319,73 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
             }
         }
         Msg::FileRead((file_name, size, content)) => {
-            console::log_1(&"7".into());
             model.files.insert(file_name, (size, content));
             model.drop_zone_active = false;
         }
         Msg::RemoveFile(file_name) => {
             model.files.remove(&file_name);
+        }
+        // Web Workers are a shit show right now, so I encrypt the files in little chunks to not
+        // block the main thread for too long, nice side effect, I can easily display a fancy progress bar
+        Msg::EncryptFiles(curr_index, position) => {
+            if model.encryption_in_progress.is_none() {
+                let sum_data = model
+                    .files
+                    .iter()
+                    .fold(0, |acc, (_, (_, data))| acc + data.len());
+                model.encryption_in_progress = Some((0, sum_data as u128));
+            };
+            let chunk_size = 123_456;
+            for (index, (file_name, (size, data))) in model.files.iter().enumerate() {
+                if index == curr_index {
+                    let mut next_index = curr_index;
+                    let next_chunk;
+                    let key = &(model.get_crypt().encrypt_str_to_base64(&file_name));
+                    // both unwraps are save, because I insert the key or check if it exists
+                    let entry = if model.encrypted_files.contains_key(key) {
+                        model.encrypted_files.get_mut(key).unwrap()
+                    } else {
+                        model
+                            .encrypted_files
+                            .insert(key.clone(), (*size, Vec::new()));
+                        model.encrypted_files.get_mut(key).unwrap()
+                    };
+
+                    let mut encrypted_chunk = if position + chunk_size > data.len() {
+                        next_index += 1;
+                        next_chunk = 0;
+                        // I'm not smart enough to figure out how I can use model.get_crypt() here...
+                        model
+                            .mc
+                            .as_ref()
+                            .expect("no crypt set")
+                            .encrypt_bytes_to_bytes(&data[position..])
+                    } else {
+                        next_chunk = position + chunk_size;
+                        model
+                            .mc
+                            .as_ref()
+                            .expect("no crypt set")
+                            .encrypt_bytes_to_bytes(&data[position..(position + chunk_size)])
+                    };
+
+                    // save to unwrap, because its getting set in the if statement before the loop
+                    let cur_progress = model.encryption_in_progress.unwrap();
+                    model.encryption_in_progress = Some((
+                        cur_progress.0 + encrypted_chunk.len() as u128,
+                        cur_progress.1,
+                    ));
+
+                    entry.1.append(&mut encrypted_chunk);
+
+                    orders.after_next_render(move |_| Msg::EncryptFiles(next_index, next_chunk));
+                }
+            }
+
+            if curr_index > model.files.len() - 1 {
+                model.encryption_in_progress = None;
+                orders.perform_cmd(async { Msg::NewSecret });
+            }
         }
     }
 }
@@ -370,18 +439,18 @@ fn view(model: &SecretShare) -> Vec<Node<Msg>> {
             nodes![
                 div![C!["row"],
                     h1!["Create new secret"],
-                    p![&model.error, " "], // invesible char to keep the element height the same
+                    p![&model.error, " "], // invesible char to keep the element height the same if error is empty
                 ],
                 div![C!["row"],
-                    textarea![C!["col 6 card w-100"], style![St::Resize => "none"],
+                    textarea![C!["col 6 card w-100"], style![St::Resize => "none", St::MarginBottom => em(-1)],
                         attrs![At::MaxLength => model.config.max_length, At::Id => "secret", At::Name => "secret",  At::Rows => "10",  At::Cols => "50"],
                         input_ev(Ev::Input, Msg::SecretChanged)
                     ],
                     // the whole drop stuff is basically from here:
                     // https://github.com/seed-rs/seed/blob/4096a77a79e3a15fc12d2ea864e0e1d51a8f3638/examples/drop_zone/src/lib.rs
                     div![C![if model.drop_zone_active || !model.files.is_empty() { "col 6 card w-50" } else { "col 3 card w-50" }],
-                            style![St::BorderStyle => "dashed", St::BorderRadius => px(20), St::Background => if model.drop_zone_active { "pink" } else { "white" },
-                            St::Transition => "width 0.5s ease-out"],
+                            style![St::BorderStyle => "dashed", St::BorderRadius => px(20)
+                            St::Transition => "width 0.25s ease-out"],
                         ev(Ev::DragEnter, |event| {
                             stop_and_prevent!(event);
                             Msg::DragEnter
@@ -402,11 +471,9 @@ fn view(model: &SecretShare) -> Vec<Node<Msg>> {
                             let file_list = drag_event.data_transfer().unwrap().files().unwrap();
                             Msg::Drop(file_list)
                         }),
-                        div![style![
-                            // St::PointerEvents => "none"
-                            St::Float => "left"],
+                        div![style![St::Float => "left"],
                             model.file_names().iter().map(|(name, abbr_name)|
-                                div![
+                                div![style![St::Margin => "0.18em 0"],
                                     div![style![St::Float => "Left", St::Cursor => "pointer", St::PaddingRight => px(5)],
                                     {
                                         let file_name = name.clone();
@@ -452,7 +519,18 @@ fn view(model: &SecretShare) -> Vec<Node<Msg>> {
                             ]
                         )
                     ],
-                    IF!(model.uuid.is_none() =>
+                    IF!(model.encryption_in_progress.is_some() =>
+                        {
+                            let (cur, over) = model.encryption_in_progress.unwrap();
+                            let percentage = 100 * cur / over;
+                            // console::log_1(&percentage.into());
+                            let background = format!("linear-gradient(90deg, #eee {}%, white 0)", percentage);
+                            div![C!["card"], style![St::TextAlign => "center", St::Background => background],
+                                format!("Encrypting Files: {}/{}", model.encryption_in_progress.unwrap().0, model.encryption_in_progress.unwrap().1)
+                            ]
+                        }
+                    ),
+                    IF!(model.uuid.is_none() && model.encryption_in_progress.is_none() =>
                         nodes![
                             input![C!["card"], attrs![At::Value => model.password, At::Type => "password", At::Name => "password", At::Placeholder => "Optional password"],
                                 input_ev(Ev::Change, Msg::PasswordChanged)
@@ -467,9 +545,9 @@ fn view(model: &SecretShare) -> Vec<Node<Msg>> {
                                 ),
                             ],
                             button![C!["btn primary"], style!(St::Float => St::Right),
-                                input_ev(Ev::Click, |_| Msg::NewSecret),
+                                input_ev(Ev::Click, |_| Msg::EncryptFiles(0, 0)),
                                 "Create"
-                            ]
+                            ],
                         ]
                     )
                 ]

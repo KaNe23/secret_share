@@ -16,7 +16,7 @@ use redis::{
 use serde::{Deserialize, Serialize};
 use serde_json::{from_str, to_string};
 use shared::{Config, Lifetime, Request, Response};
-use std::str::FromStr;
+use std::{collections::HashMap, str::FromStr};
 use uuid::Uuid;
 
 lazy_static! {
@@ -195,10 +195,11 @@ async fn get_secret(params: web::Json<Request>) -> impl Responder {
 
 #[post("/new_secret")]
 async fn new_secret(params: web::Json<Request>) -> impl Responder {
-    let (secret, password, lifetime) = if let Json(Request::CreateSecret {
+    let (secret, password, lifetime, files) = if let Json(Request::CreateSecret {
         encrypted_secret,
         password,
         lifetime,
+        files,
     }) = params
     {
         let password = if let Some(password) = password {
@@ -212,7 +213,7 @@ async fn new_secret(params: web::Json<Request>) -> impl Responder {
             None
         };
 
-        (encrypted_secret, password, lifetime)
+        (encrypted_secret, password, lifetime, files)
     } else {
         return HttpResponse::BadRequest().finish();
     };
@@ -230,7 +231,16 @@ async fn new_secret(params: web::Json<Request>) -> impl Responder {
 
     let key = Uuid::new_v4();
 
-    let result: RedisResult<Entry> = store.set(key.to_string(), Entry { secret, password }).await;
+    let result: RedisResult<Entry> = store
+        .set(
+            key.to_string(),
+            Entry {
+                secret,
+                password,
+                files,
+            },
+        )
+        .await;
 
     if let Err(msg) = result {
         return HttpResponse::InternalServerError().body(format!("Error: {}", msg));
@@ -251,6 +261,7 @@ async fn new_secret(params: web::Json<Request>) -> impl Responder {
 struct Entry {
     secret: String,
     password: Option<String>,
+    files: HashMap<String, (u128, Vec<u8>)>,
 }
 
 impl FromRedisValue for Entry {
@@ -272,6 +283,7 @@ impl FromRedisValue for Entry {
             Value::Okay | Value::Int(_) => Ok(Entry {
                 secret: "".to_string(),
                 password: None,
+                files: HashMap::new(),
             }),
             _ => Err(RedisError::from((
                 ErrorKind::ExtensionError,
