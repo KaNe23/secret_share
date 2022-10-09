@@ -352,14 +352,14 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
                     .fold(0, |acc, (_, (_, data))| acc + data.len());
                 model.encryption_in_progress = Some((0, sum_data as u128));
             };
-            let chunk_size = 123_456;
+
             for (index, (file_name, (_size, data))) in model.files.iter().enumerate() {
                 if index == current_index {
                     let mut next_index = current_index;
                     let next_chunk;
 
-                    let offset = position * chunk_size;
-                    let encrypted_chunk = if offset + chunk_size > data.len() {
+                    let offset = position * model.config.chunk_size;
+                    let encrypted_chunk = if offset + model.config.chunk_size > data.len() {
                         next_index += 1;
                         next_chunk = 0;
 
@@ -375,7 +375,9 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
                             .mc
                             .as_ref()
                             .expect("no crypt set")
-                            .encrypt_bytes_to_bytes(&data[offset..(offset + chunk_size)])
+                            .encrypt_bytes_to_bytes(
+                                &data[offset..(offset + model.config.chunk_size)],
+                            )
                     };
 
                     // save to unwrap, because its getting set in the if statement before the loop

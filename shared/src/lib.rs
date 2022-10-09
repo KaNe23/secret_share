@@ -133,6 +133,7 @@ pub struct Config {
     pub lifetimes: Vec<Lifetime>,
     pub max_files: i32,
     pub max_files_size: u128,
+    pub chunk_size: usize,
 }
 
 impl Default for Config {
@@ -146,6 +147,7 @@ impl Default for Config {
             lifetimes: vec![Lifetime::Days(7)],
             max_files: 5,
             max_files_size: byte_unit::n_mib_bytes!(25),
+            chunk_size: 123_456 * 4,
         }
     }
 }
