@@ -16,6 +16,7 @@ use redis::{
 use serde::{Deserialize, Serialize};
 use serde_json::{from_str, to_string};
 use shared::{Config, Lifetime, Request, Response};
+use std::str;
 use std::{collections::HashMap, str::FromStr};
 use uuid::Uuid;
 
@@ -193,13 +194,38 @@ async fn get_secret(params: web::Json<Request>) -> impl Responder {
     HttpResponse::Ok().json(Response::Secret(entry.secret))
 }
 
+#[post("/file_chunk")]
+async fn file_chunk(params: web::Json<Request>) -> impl Responder {
+    let (uuid, file_name, chunk_index, chunk) = if let Json(Request::SendFileChunk {
+        uuid,
+        file_name,
+        chunk_index,
+        chunk,
+    }) = params
+    {
+        (uuid, file_name, chunk_index, chunk)
+    } else {
+        return HttpResponse::BadRequest().finish();
+    };
+
+    println!(
+        "Uuid: {}, File: {}, Index: {}, Data: {}",
+        uuid,
+        file_name,
+        chunk_index,
+        chunk.len()
+    );
+
+    HttpResponse::Ok().json(Response::Ok)
+}
+
 #[post("/new_secret")]
 async fn new_secret(params: web::Json<Request>) -> impl Responder {
-    let (secret, password, lifetime, files) = if let Json(Request::CreateSecret {
+    let (secret, password, lifetime, file_list) = if let Json(Request::CreateSecret {
         encrypted_secret,
         password,
         lifetime,
-        files,
+        file_list,
     }) = params
     {
         let password = if let Some(password) = password {
@@ -213,7 +239,7 @@ async fn new_secret(params: web::Json<Request>) -> impl Responder {
             None
         };
 
-        (encrypted_secret, password, lifetime, files)
+        (encrypted_secret, password, lifetime, file_list)
     } else {
         return HttpResponse::BadRequest().finish();
     };
@@ -237,7 +263,7 @@ async fn new_secret(params: web::Json<Request>) -> impl Responder {
             Entry {
                 secret,
                 password,
-                files,
+                file_list,
             },
         )
         .await;
@@ -261,7 +287,7 @@ async fn new_secret(params: web::Json<Request>) -> impl Responder {
 struct Entry {
     secret: String,
     password: Option<String>,
-    files: HashMap<String, (u128, Vec<u8>)>,
+    file_list: HashMap<String, u128>,
 }
 
 impl FromRedisValue for Entry {
@@ -283,7 +309,7 @@ impl FromRedisValue for Entry {
             Value::Okay | Value::Int(_) => Ok(Entry {
                 secret: "".to_string(),
                 password: None,
-                files: HashMap::new(),
+                file_list: HashMap::new(),
             }),
             _ => Err(RedisError::from((
                 ErrorKind::ExtensionError,
@@ -344,7 +370,8 @@ async fn main() -> std::io::Result<()> {
             .service(index)
             .service(index_uuid)
             .service(new_secret)
-            .service(get_secret);
+            .service(get_secret)
+            .service(file_chunk);
 
         #[cfg(feature = "frontend-yew")]
         let app = app.service(Files::new("/pkg", "./client/dist/").prefer_utf8(true));

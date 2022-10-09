@@ -9,7 +9,13 @@ pub enum Request {
         encrypted_secret: String,
         password: Option<String>,
         lifetime: Lifetime,
-        files: HashMap<String, (u128, Vec<u8>)>, // file_name => (size, data)
+        file_list: HashMap<String, u128>,
+    },
+    SendFileChunk {
+        uuid: Uuid,
+        file_name: String,
+        chunk_index: usize,
+        chunk: Vec<u8>,
     },
     GetSecret {
         uuid: Uuid,
@@ -114,6 +120,7 @@ pub enum Response {
     Error(String),
     Secret(String),
     Uuid(Uuid),
+    Ok,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
