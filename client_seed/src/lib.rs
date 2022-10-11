@@ -26,7 +26,7 @@ struct SecretShare {
     files: HashMap<String, (u128, Vec<u8>)>,
 
     mc: Option<MagicCrypt256>,
-    encryption_in_progress: Option<(u128, u128)>,
+    cryption_in_progress: Option<(u128, u128)>,
 
     clipboard_button_text: String,
     uuid: Option<Uuid>,
@@ -90,6 +90,7 @@ enum Msg {
     FileRead((String, u128, Vec<u8>)),
     RemoveFile(String),
     EncryptFiles(usize, usize),
+    DecryptFiles(usize, usize, Vec<(String, usize)>),
 }
 
 enum SecretShareError {
@@ -261,14 +262,31 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
                     model.uuid = Some(uuid);
                     if !model.files.is_empty() {
                         // encrypt and send files after we created the secret
-                        orders.perform_cmd(async { Msg::EncryptFiles(0, 0) });
+                        orders.send_msg(Msg::EncryptFiles(0, 0));
                     }
                 }
                 shared::Response::Secret(encrypted_secret) => {
-                    match model.get_crypt().decrypt_base64_to_string(encrypted_secret) {
+                    let (secret, file_list) = (encrypted_secret.0, encrypted_secret.1);
+                    // console::log_1(&format!("{:?}", file_list).into());
+                    match model.get_crypt().decrypt_base64_to_string(secret) {
                         Ok(secret) => model.secret = Some(secret),
                         Err(e) => model.error = Some(e.to_string()),
                     }
+                    if !file_list.is_empty() {
+                        orders.send_msg(Msg::DecryptFiles(0, 0, file_list));
+                    }
+                }
+                shared::Response::FileChunk(file_name, _chunk_index, mut chunk) => {
+                    match model.get_crypt().decrypt_base64_to_string(file_name) {
+                        Ok(file_name) => {
+                            let file = model
+                                .files
+                                .get_mut(&file_name)
+                                .expect("Could not find element");
+                            file.1.append(&mut chunk);
+                        }
+                        Err(_e) => model.error = Some("Could not decrypt chunk".into()),
+                    };
                 }
                 shared::Response::Ok => (),
                 shared::Response::Error(e) => model.error = Some(e),
@@ -345,12 +363,12 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
         // Web Workers are a shit show right now, so I encrypt the files in little chunks to not
         // block the main thread for too long, nice side effect, I can easily display a fancy progress bar
         Msg::EncryptFiles(current_index, position) => {
-            if model.encryption_in_progress.is_none() {
+            if model.cryption_in_progress.is_none() {
                 let sum_data = model
                     .files
                     .iter()
                     .fold(0, |acc, (_, (_, data))| acc + data.len());
-                model.encryption_in_progress = Some((0, sum_data as u128));
+                model.cryption_in_progress = Some((0, sum_data as u128));
             };
 
             for (index, (file_name, (_size, data))) in model.files.iter().enumerate() {
@@ -381,8 +399,8 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
                     };
 
                     // save to unwrap, because its getting set in the if statement before the loop
-                    let cur_progress = model.encryption_in_progress.unwrap();
-                    model.encryption_in_progress = Some((
+                    let cur_progress = model.cryption_in_progress.unwrap();
+                    model.cryption_in_progress = Some((
                         cur_progress.0 + encrypted_chunk.len() as u128,
                         cur_progress.1,
                     ));
@@ -404,8 +422,54 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
             }
 
             if current_index > model.files.len() - 1 {
-                model.encryption_in_progress = None;
+                model.cryption_in_progress = None;
                 console::log_1(&"Done".into());
+            }
+        }
+        Msg::DecryptFiles(current_index, chunk, file_list) => {
+            if model.cryption_in_progress.is_none() {
+                model.cryption_in_progress = Some((
+                    chunk as u128,
+                    file_list.iter().fold(0, |acc, amount| acc + amount.1) as u128,
+                ));
+                for (file_name, _chunks) in file_list.iter() {
+                    match model.get_crypt().decrypt_base64_to_string(&file_name) {
+                        Ok(file_name) => {
+                            model.files.insert(file_name.clone(), (0, vec![]));
+                        }
+                        Err(_e) => {
+                            model.error = Some("Could not decrypt file name".into());
+                        }
+                    };
+                }
+            } else {
+                model.cryption_in_progress = Some((
+                    model.cryption_in_progress.unwrap().0 + 1,
+                    model.cryption_in_progress.unwrap().1,
+                ))
+            }
+
+            let request = shared::Request::GetFileChunk {
+                uuid: model.uuid.expect("no uuid"),
+                file_name: file_list[current_index].0.clone(),
+                chunk_index: chunk,
+            };
+            orders.perform_cmd(async move {
+                Msg::Response(send_request(&request, "/get_file_chunk").await)
+            });
+            // check for last file and chunk
+            if current_index == file_list.len() - 1 && chunk == file_list[current_index].1 {
+                model.cryption_in_progress = None;
+            } else {
+                let (next_index, next_chunk) = if chunk < file_list[current_index].1 {
+                    (current_index, chunk + 1)
+                } else {
+                    (current_index + 1, 0)
+                };
+
+                orders.after_next_render(move |_| {
+                    Msg::DecryptFiles(next_index, next_chunk, file_list)
+                });
             }
         }
     }
@@ -430,7 +494,7 @@ fn view(model: &SecretShare) -> Vec<Node<Msg>> {
             nodes![
                 h1!["View secret"],
                 h5!["This can only be done ONCE!"]
-                p![&model.error],
+                p![&model.error, &model.config.info],
                 textarea![C!["card w-100"], style![St::Resize => "none"],
                     attrs![At::Id => "secret", At::Name => "secret", At::Rows => "10", At::Cols => "50", At::Value => model.get_secret(), At::ReadOnly => true]
                 ]
@@ -448,7 +512,7 @@ fn view(model: &SecretShare) -> Vec<Node<Msg>> {
                         div![C!["col"],
                             button![C!["btn primary"],
                                 input_ev(Ev::Click, |_| Msg::GetSecret),
-                                "Reveal"
+                                if !&model.config.info.is_empty() { "Reveal and download File(s)" } else { "Reveal" }
                             ]
                         ]
                     ]
@@ -527,7 +591,7 @@ fn view(model: &SecretShare) -> Vec<Node<Msg>> {
                     hr![]
                 ],
                 div![C!["row"],
-                    IF!(model.uuid.is_some() && model.encryption_in_progress.is_none() =>
+                    IF!(model.uuid.is_some() && model.cryption_in_progress.is_none() =>
                         // div![C!["row"],
                         nodes![
                             div![C!["10 col"], style![St::PaddingRight => em(1), St::TextAlign => "center"],
@@ -541,17 +605,17 @@ fn view(model: &SecretShare) -> Vec<Node<Msg>> {
                             ]
                         ]
                     ),
-                    IF!(model.encryption_in_progress.is_some() =>
+                    IF!(model.cryption_in_progress.is_some() =>
                         {
-                            let (cur, over) = model.encryption_in_progress.unwrap();
+                            let (cur, over) = model.cryption_in_progress.unwrap();
                             let percentage = 100 * cur / over;
                             let background = format!("linear-gradient(90deg, #eee {}%, white 0)", percentage);
                             div![C!["card"], style![St::TextAlign => "center", St::Background => background],
-                                format!("Encrypting and Sending Files: {}/{}", model.encryption_in_progress.unwrap().0, model.encryption_in_progress.unwrap().1)
+                                format!("Encrypting and Sending Files: {}/{}", model.cryption_in_progress.unwrap().0, model.cryption_in_progress.unwrap().1)
                             ]
                         }
                     ),
-                    IF!(model.uuid.is_none() && model.encryption_in_progress.is_none() =>
+                    IF!(model.uuid.is_none() && model.cryption_in_progress.is_none() =>
                         nodes![
                             input![C!["card"], attrs![At::Value => model.password, At::Type => "password", At::Name => "password", At::Placeholder => "Optional password"],
                                 input_ev(Ev::Change, Msg::PasswordChanged)

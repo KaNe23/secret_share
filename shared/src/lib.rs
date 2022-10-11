@@ -17,6 +17,11 @@ pub enum Request {
         chunk_index: usize,
         chunk: Vec<u8>,
     },
+    GetFileChunk {
+        uuid: Uuid,
+        file_name: String,
+        chunk_index: usize,
+    },
     GetSecret {
         uuid: Uuid,
         password: String,
@@ -118,7 +123,8 @@ impl Lifetime {
 #[derive(Serialize, Deserialize, Clone)]
 pub enum Response {
     Error(String),
-    Secret(String),
+    Secret((String, Vec<(String, usize)>)),
+    FileChunk(String, usize, Vec<u8>),
     Uuid(Uuid),
     Ok,
 }
@@ -126,6 +132,7 @@ pub enum Response {
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Config {
     pub error: String,
+    pub info: String,
     pub base_url: String,
     pub key_length: i32,
     pub max_length: i32,
@@ -140,6 +147,7 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             error: "".to_string(),
+            info: "".to_string(),
             base_url: "".to_string(),
             key_length: 16,
             max_length: 10000,

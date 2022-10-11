@@ -3,6 +3,7 @@ mod entry;
 use actix_files::Files;
 use actix_web::{
     get,
+    middleware::Compress,
     middleware::Logger,
     post,
     web::{self, Data, Json},
@@ -10,6 +11,7 @@ use actix_web::{
 };
 use anyhow::{Error, Result};
 use askama::Template;
+use byte_unit::Byte;
 use lazy_static::lazy_static;
 use redis::{
     aio::Connection, AsyncCommands, Client, ErrorKind, FromRedisValue, RedisError, RedisResult,
@@ -69,7 +71,7 @@ lazy_static! {
         .unwrap_or(5);
     static ref MAX_FILES_SIZE: u128 = std::env::var("MAX_FILES_SIZE")
         .ok()
-        .and_then(|max_files_size| byte_unit::Byte::from_str(max_files_size).ok())
+        .and_then(|max_files_size| Byte::from_str(max_files_size).ok())
         .and_then(|max_files_size| Some(max_files_size.get_bytes()))
         .unwrap_or(byte_unit::n_mib_bytes!(25));
 
@@ -113,6 +115,7 @@ async fn index_uuid(uuid: web::Path<String>) -> impl Responder {
         Err(_msg) => {
             return render_index_page(
                 "Invalid secret key (UUID), likely an incomplete link/url.".to_string(),
+                "".into(),
                 false,
             )
         }
@@ -122,32 +125,46 @@ async fn index_uuid(uuid: web::Path<String>) -> impl Responder {
         Ok(false) => {
             return render_index_page(
                 "Secret expired, not found or already viewed.".to_string(),
+                "".into(),
                 false,
             )
         }
-        Err(msg) => return render_index_page(format!("Error: {}", msg), false),
+        Err(msg) => return render_index_page(format!("Error: {}", msg), "".into(), false),
         _ => {}
     }
 
     match find_entry(key).await {
         Ok((_uuid, entry)) => {
-            if entry.password.is_some() {
-                render_index_page("".to_string(), true)
+            let file_info = if !entry.file_list.is_empty() {
+                let size = entry.file_list.iter().fold(0, |acc, (_, size)| acc + size);
+                let size = Byte::from_bytes(size).get_appropriate_unit(true);
+                format!(
+                    "{} files(s) attached, accumulated size: {}",
+                    entry.file_list.len(),
+                    size
+                )
             } else {
-                render_index_page("".to_string(), false)
+                "No files attached.".into()
+            };
+            if entry.password.is_some() {
+                render_index_page("".into(), file_info, true)
+            } else {
+                render_index_page("".into(), file_info, false)
             }
         }
         Err(msg) => render_index_page(
             format!("Secret found but could not be fetched: {}", msg),
+            "".into(),
             false,
         ),
     }
 }
 
-fn render_index_page(error: String, password_required: bool) -> impl Responder {
+fn render_index_page(error: String, info: String, password_required: bool) -> impl Responder {
     let index_page = IndexTemplate {
         json_config: Json(Config {
             error,
+            info,
             base_url: BASE_URL.clone(),
             key_length: *KEY_LENGTH,
             max_length: *MAX_LENGTH,
@@ -167,7 +184,7 @@ fn render_index_page(error: String, password_required: bool) -> impl Responder {
 
 #[get("/")]
 async fn index() -> impl Responder {
-    render_index_page("".to_string(), false)
+    render_index_page("".into(), "".into(), false)
 }
 
 #[post("/get_secret")]
@@ -204,7 +221,21 @@ async fn get_secret(params: web::Json<Request>) -> impl Responder {
         return HttpResponse::InternalServerError().body(format!("Error: {}", msg));
     }
 
-    HttpResponse::Ok().json(Response::Secret(entry.secret))
+    // let mut file_list = HashMap::new();
+    let mut file_list = Vec::new();
+
+    for (file_name, size) in entry.file_list.iter() {
+        let chunks: Vec<String> = match store.keys(format!("{}-{}-*", key, file_name)).await {
+            Ok(list) => list,
+            Err(e) => {
+                return HttpResponse::Ok().json(Response::Error(format!("Redis error: {}", e)))
+            }
+        };
+        // file_list.insert(file_name.clone(), (*size, chunks.len()));
+        file_list.push((file_name.clone(), chunks.len()));
+    }
+
+    HttpResponse::Ok().json(Response::Secret((entry.secret, file_list)))
 }
 
 #[post("/file_chunk")]
@@ -246,6 +277,32 @@ async fn file_chunk(params: web::Json<Request>) -> impl Responder {
     }
 
     HttpResponse::Ok().json(Response::Ok)
+}
+
+#[post("/get_file_chunk")]
+async fn get_file_chunk(params: web::Json<Request>) -> impl Responder {
+    let (uuid, file_name, chunk_index) = if let Json(Request::GetFileChunk {
+        uuid,
+        file_name,
+        chunk_index,
+    }) = params
+    {
+        (uuid, file_name, chunk_index)
+    } else {
+        return HttpResponse::BadRequest().finish();
+    };
+
+    if let Ok(mut store) = get_storage().await {
+        let u_file_name = format!("{}-{}-{}", uuid, file_name, chunk_index);
+        match store.get(u_file_name).await {
+            Ok(chunk) => {
+                HttpResponse::Ok().json(Response::FileChunk(file_name, chunk_index, chunk))
+            }
+            Err(e) => HttpResponse::Ok().json(Response::Error(format!("Redis error: {}", e))),
+        }
+    } else {
+        HttpResponse::Ok().json(Response::Error("Could not get storage".into()))
+    }
 }
 
 #[post("/new_secret")]
@@ -344,12 +401,14 @@ async fn main() -> std::io::Result<()> {
 
     HttpServer::new(|| {
         let app = App::new()
+            .wrap(Compress::default())
             .wrap(Logger::default())
             .service(index)
             .service(index_uuid)
             .service(new_secret)
             .service(get_secret)
-            .service(file_chunk);
+            .service(file_chunk)
+            .service(get_file_chunk);
 
         #[cfg(feature = "frontend-yew")]
         let app = app.service(Files::new("/pkg", "./client/dist/").prefer_utf8(true));
