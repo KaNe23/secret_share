@@ -24,6 +24,7 @@ struct SecretShare {
 
     drop_zone_active: bool,
     files: HashMap<String, (u128, Vec<u8>)>,
+    file_buffer: HashMap<String, Vec<Vec<u8>>>,
 
     mc: Option<MagicCrypt256>,
     cryption_in_progress: Option<(u128, u128)>,
@@ -276,14 +277,25 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
                         orders.send_msg(Msg::DecryptFiles(0, 0, file_list));
                     }
                 }
-                shared::Response::FileChunk(file_name, _chunk_index, mut chunk) => {
+                shared::Response::FileChunk(file_name, chunk_index, chunk) => {
+                    let decrypted_chunk = model.get_crypt().decrypt_bytes_to_bytes(&chunk).unwrap();
                     match model.get_crypt().decrypt_base64_to_string(file_name) {
                         Ok(file_name) => {
+                            console::log_1(
+                                &format!("File: {} Chunk: {}", file_name, chunk_index).into(),
+                            );
                             let file = model
-                                .files
+                                .file_buffer
                                 .get_mut(&file_name)
                                 .expect("Could not find element");
-                            file.1.append(&mut chunk);
+                            console::log_1(&format!("b: {}", chunk_index).into());
+                            file.insert(chunk_index, decrypted_chunk);
+                            console::log_1(&format!("a: {}", chunk_index).into());
+
+                            model.cryption_in_progress = Some((
+                                model.cryption_in_progress.unwrap().0 + 1,
+                                model.cryption_in_progress.unwrap().1,
+                            ))
                         }
                         Err(_e) => model.error = Some("Could not decrypt chunk".into()),
                     };
@@ -398,6 +410,10 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
                             )
                     };
 
+                    new_magic_crypt!(model.encrypt_key.clone().unwrap(), 256, "AES")
+                        .decrypt_bytes_to_bytes(&encrypted_chunk)
+                        .unwrap();
+
                     // save to unwrap, because its getting set in the if statement before the loop
                     let cur_progress = model.cryption_in_progress.unwrap();
                     model.cryption_in_progress = Some((
@@ -436,6 +452,10 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
                     match model.get_crypt().decrypt_base64_to_string(&file_name) {
                         Ok(file_name) => {
                             model.files.insert(file_name.clone(), (0, vec![]));
+                            model.file_buffer.insert(
+                                file_name.clone(),
+                                vec![vec![]; file_list[current_index].1],
+                            );
                         }
                         Err(_e) => {
                             model.error = Some("Could not decrypt file name".into());
@@ -443,10 +463,10 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
                     };
                 }
             } else {
-                model.cryption_in_progress = Some((
-                    model.cryption_in_progress.unwrap().0 + 1,
-                    model.cryption_in_progress.unwrap().1,
-                ))
+                // model.cryption_in_progress = Some((
+                //     model.cryption_in_progress.unwrap().0 + 1,
+                //     model.cryption_in_progress.unwrap().1,
+                // ))
             }
 
             let request = shared::Request::GetFileChunk {
@@ -459,7 +479,9 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
             });
             // check for last file and chunk
             if current_index == file_list.len() - 1 && chunk == file_list[current_index].1 {
-                model.cryption_in_progress = None;
+                // model.cryption_in_progress = None;
+                console::log_1(&"\"Done\"".into());
+                // console::log_1(&format!("{:?}", model.files).into());
             } else {
                 let (next_index, next_chunk) = if chunk < file_list[current_index].1 {
                     (current_index, chunk + 1)
@@ -499,6 +521,16 @@ fn view(model: &SecretShare) -> Vec<Node<Msg>> {
                     attrs![At::Id => "secret", At::Name => "secret", At::Rows => "10", At::Cols => "50", At::Value => model.get_secret(), At::ReadOnly => true]
                 ]
                 hr![],
+                IF!(model.cryption_in_progress.is_some() =>
+                    {
+                        let (cur, over) = model.cryption_in_progress.unwrap();
+                        let percentage = 100 * cur / over;
+                        let background = format!("linear-gradient(90deg, #eee {}%, white 0)", percentage);
+                        div![C!["card"], style![St::TextAlign => "center", St::Background => background],
+                            format!("Receiving and decrypting Files: {}/{}", model.cryption_in_progress.unwrap().0, model.cryption_in_progress.unwrap().1)
+                        ]
+                    }
+                ),
                 IF!(model.secret.is_none() =>
                     div![C!["row"], style![St::BorderSpacing => "0 0"],
                         IF!( model.config.password_required =>
