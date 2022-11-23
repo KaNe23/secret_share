@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::fmt::Display;
 
 use byte_unit::Byte;
-use magic_crypt::{new_magic_crypt, MagicCrypt256, MagicCryptTrait};
+use chacha20poly1305::aead::Aead;
+use chacha20poly1305::*;
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use seed::{
@@ -21,12 +22,12 @@ struct SecretShare {
     config: Config,
     encrypt_key: Option<String>,
     decrypt_key: Option<String>,
+    nonce: Option<String>,
 
     drop_zone_active: bool,
     files: HashMap<String, (u128, Vec<u8>)>,
     file_buffer: HashMap<String, Vec<Vec<u8>>>,
 
-    mc: Option<MagicCrypt256>,
     cryption_in_progress: Option<(u128, u128)>,
 
     clipboard_button_text: String,
@@ -40,11 +41,48 @@ struct SecretShare {
 impl SecretShare {
     fn url(&self) -> String {
         format!(
-            "{}/{}#{}",
+            "{}/{}#{}.{}",
             self.config.base_url,
             self.uuid.expect("No uuid set"),
-            self.encrypt_key.as_ref().expect("No encrypt key set")
+            self.encrypt_key.as_ref().expect("No encrypt key set"),
+            self.nonce.as_ref().expect("No encrypt key set")
         )
+    }
+
+    fn binary_encrypt_key(&self) -> [u8; 32] {
+        self.encrypt_key
+            .as_ref()
+            .expect("Not set")
+            .chars()
+            .map(|c| c as u8)
+            .collect::<Vec<_>>()
+            .as_slice()
+            .try_into()
+            .expect("Wrong length")
+    }
+
+    fn binary_decrypt_key(&self) -> [u8; 32] {
+        self.decrypt_key
+            .as_ref()
+            .expect("Not set")
+            .chars()
+            .map(|c| c as u8)
+            .collect::<Vec<_>>()
+            .as_slice()
+            .try_into()
+            .expect("Wrong length")
+    }
+
+    fn binary_nonce(&self) -> [u8; 24] {
+        self.nonce
+            .as_ref()
+            .expect("Not set")
+            .chars()
+            .map(|c| c as u8)
+            .collect::<Vec<_>>()
+            .as_slice()
+            .try_into()
+            .expect("Wrong length")
     }
 
     fn get_secret(&self) -> String {
@@ -70,8 +108,14 @@ impl SecretShare {
             .collect()
     }
 
-    fn get_crypt(&self) -> &MagicCrypt256 {
-        self.mc.as_ref().expect("no crypt set")
+    fn get_crypt(&self) -> XChaCha20Poly1305 {
+        if self.decrypt_key.is_some() {
+            XChaCha20Poly1305::new((&self.binary_decrypt_key()).into())
+        } else if self.encrypt_key.is_some() {
+            XChaCha20Poly1305::new((&self.binary_encrypt_key()).into())
+        } else {
+            panic!("No en/decrypt key set")
+        }
     }
 }
 
@@ -91,7 +135,7 @@ enum Msg {
     FileRead((String, u128, Vec<u8>)),
     RemoveFile(String),
     EncryptFiles(usize, usize),
-    DecryptFiles(usize, usize, Vec<(String, usize)>),
+    DecryptFiles(usize, usize, Vec<(Vec<u8>, usize)>),
 }
 
 enum SecretShareError {
@@ -108,7 +152,9 @@ impl Display for SecretShareError {
     }
 }
 
-fn get_uuid_and_hash(key_len: i32) -> Option<Result<(Uuid, String), SecretShareError>> {
+fn get_uuid_and_hash() -> Option<Result<(Uuid, (String, String)), SecretShareError>> {
+    let key_len = 32;
+    let nonce_len = 24;
     let url = web_sys::window()
         .and_then(|window| window.document())
         .and_then(|document| document.url().ok())
@@ -122,14 +168,17 @@ fn get_uuid_and_hash(key_len: i32) -> Option<Result<(Uuid, String), SecretShareE
             if let Ok(uuid) = Uuid::parse_str(&pathname[1..]) {
                 let hash = if hash.is_empty() {
                     return Some(Err(SecretShareError::KeyMissing));
-                } else if (hash.len() - 1) != key_len as usize {
+                } else if (hash.len() - 2) != (key_len + nonce_len) as usize {
+                    // - 2 for # and devider .
                     return Some(Err(SecretShareError::InvalidKeyLength));
                 } else {
                     // hash contains # as first char
                     hash[1..].to_string()
                 };
-
-                return Some(Ok((uuid, hash)));
+                let split = hash.split(".").collect::<Vec<_>>();
+                let key = split[0];
+                let nonce = split[1];
+                return Some(Ok((uuid, (key.to_string(), nonce.to_string()))));
             }
         }
     }
@@ -148,18 +197,20 @@ fn init(_: Url, _: &mut impl Orders<Msg>) -> SecretShare {
         .unwrap_or_default();
 
     let mut encrypt_key = None;
-    let mut error = None;
     let mut decrypt_key = None;
+    let mut nonce = None;
+    let mut error = None;
     let mut uuid = None;
 
     // if the server is unabel to find the secret we bail out directly
     if !config.error.is_empty() {
         error = Some(config.error.clone());
     } else {
-        match get_uuid_and_hash(config.key_length) {
+        match get_uuid_and_hash() {
             Some(result) => match result {
-                Ok((url_uuid, key)) => {
+                Ok((url_uuid, (key, nonce_key))) => {
                     decrypt_key = Some(key);
+                    nonce = Some(nonce_key);
                     uuid = Some(url_uuid);
                 }
                 Err(e) => error = Some(e.to_string()),
@@ -168,7 +219,14 @@ fn init(_: Url, _: &mut impl Orders<Msg>) -> SecretShare {
                 encrypt_key = Some(
                     (&mut thread_rng())
                         .sample_iter(Alphanumeric)
-                        .take(config.key_length as usize)
+                        .take(32) // ChaCha20 needs key length of 32
+                        .map(char::from)
+                        .collect::<String>(),
+                );
+                nonce = Some(
+                    (&mut thread_rng())
+                        .sample_iter(Alphanumeric)
+                        .take(24) // ChaCha20 needs key length of 24
                         .map(char::from)
                         .collect::<String>(),
                 );
@@ -176,21 +234,13 @@ fn init(_: Url, _: &mut impl Orders<Msg>) -> SecretShare {
         }
     }
 
-    let mc = if let Some(key) = encrypt_key.clone() {
-        Some(new_magic_crypt!(key, 256, "AES"))
-    } else {
-        decrypt_key
-            .clone()
-            .map(|key| new_magic_crypt!(key, 256, "AES"))
-    };
-
     SecretShare {
         config,
         encrypt_key,
-        error,
         decrypt_key,
+        nonce,
+        error,
         uuid,
-        mc,
         clipboard_button_text: "Copy to Clipboard".into(),
         ..Default::default()
     }
@@ -220,7 +270,10 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
         Msg::SecretChanged(secret) => model.secret = Some(secret),
         Msg::PasswordChanged(password) => model.password = password,
         Msg::NewSecret => {
-            let encrypted_secret = model.get_crypt().encrypt_str_to_base64(model.get_secret());
+            let encrypted_secret = model
+                .get_crypt()
+                .encrypt(&model.binary_nonce().into(), model.get_secret().as_ref())
+                .expect("Could not enctypt");
 
             let password = if model.password.is_empty() {
                 None
@@ -233,17 +286,23 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
                     .files
                     .iter()
                     .fold(HashMap::new(), |mut list, (filename, (size, _))| {
-                        list.insert(model.get_crypt().encrypt_str_to_base64(filename), *size);
+                        list.insert(
+                            model
+                                .get_crypt()
+                                .encrypt(&model.binary_nonce().into(), filename.as_ref())
+                                .expect("Could not encrypt"),
+                            *size,
+                        );
                         list
                     });
-
+            // console::log_1(&"1!".into());
             let request = shared::Request::CreateSecret {
                 encrypted_secret,
                 password,
                 lifetime: model.lifetime,
                 file_list,
             };
-
+            // console::log_1(&"2!".into());
             orders.perform_cmd(async move {
                 Msg::Response(send_request(&request, "/new_secret").await)
             });
@@ -261,16 +320,22 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
             Ok(response) => match response {
                 shared::Response::Uuid(uuid) => {
                     model.uuid = Some(uuid);
+
                     if !model.files.is_empty() {
-                        // encrypt and send files after we created the secret
+                        //     // encrypt and send files after we created the secret
                         orders.send_msg(Msg::EncryptFiles(0, 0));
                     }
                 }
                 shared::Response::Secret(encrypted_secret) => {
                     let (secret, file_list) = (encrypted_secret.0, encrypted_secret.1);
                     // console::log_1(&format!("{:?}", file_list).into());
-                    match model.get_crypt().decrypt_base64_to_string(secret) {
-                        Ok(secret) => model.secret = Some(secret),
+                    match model
+                        .get_crypt()
+                        .decrypt(&model.binary_nonce().into(), secret.as_ref())
+                    {
+                        Ok(secret) => {
+                            model.secret = Some(String::from_utf8(secret).expect("Invalid UTF8"))
+                        }
                         Err(e) => model.error = Some(e.to_string()),
                     }
                     if !file_list.is_empty() {
@@ -278,9 +343,16 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
                     }
                 }
                 shared::Response::FileChunk(file_name, chunk_index, chunk) => {
-                    let decrypted_chunk = model.get_crypt().decrypt_bytes_to_bytes(&chunk).unwrap();
-                    match model.get_crypt().decrypt_base64_to_string(file_name) {
+                    let decrypted_chunk = model
+                        .get_crypt()
+                        .decrypt(&model.binary_nonce().into(), chunk.as_ref())
+                        .unwrap();
+                    match model
+                        .get_crypt()
+                        .decrypt(&model.binary_nonce().into(), file_name.as_ref())
+                    {
                         Ok(file_name) => {
+                            let file_name = String::from_utf8(file_name).expect("Invalid UTF8");
                             console::log_1(
                                 &format!("File: {} Chunk: {}", file_name, chunk_index).into(),
                             );
@@ -393,26 +465,24 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
                         next_index += 1;
                         next_chunk = 0;
 
-                        // I'm not smart enough to figure out how I can use model.get_crypt() here...
                         model
-                            .mc
-                            .as_ref()
-                            .expect("no crypt set")
-                            .encrypt_bytes_to_bytes(&data[offset..])
+                            .get_crypt()
+                            .encrypt(&model.binary_nonce().into(), &data[offset..])
+                            .expect("Could not encrypt")
                     } else {
                         next_chunk = position + 1;
                         model
-                            .mc
-                            .as_ref()
-                            .expect("no crypt set")
-                            .encrypt_bytes_to_bytes(
+                            .get_crypt()
+                            .encrypt(
+                                &model.binary_nonce().into(),
                                 &data[offset..(offset + model.config.chunk_size)],
                             )
+                            .expect("Could not encrypt")
                     };
 
-                    new_magic_crypt!(model.encrypt_key.clone().unwrap(), 256, "AES")
-                        .decrypt_bytes_to_bytes(&encrypted_chunk)
-                        .unwrap();
+                    // new_magic_crypt!(model.encrypt_key.clone().unwrap(), 256, "AES")
+                    //     .decrypt_bytes_to_bytes(&encrypted_chunk)
+                    //     .unwrap();
 
                     // save to unwrap, because its getting set in the if statement before the loop
                     let cur_progress = model.cryption_in_progress.unwrap();
@@ -422,7 +492,10 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
                     ));
 
                     let uuid = model.uuid.expect("no Uuid");
-                    let file_name = model.get_crypt().encrypt_str_to_base64(file_name);
+                    let file_name = model
+                        .get_crypt()
+                        .encrypt(&model.binary_nonce().into(), file_name.as_ref())
+                        .expect("Could not encrypt");
                     let request = shared::Request::SendFileChunk {
                         uuid,
                         file_name,
@@ -449,8 +522,12 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
                     file_list.iter().fold(0, |acc, amount| acc + amount.1) as u128,
                 ));
                 for (file_name, _chunks) in file_list.iter() {
-                    match model.get_crypt().decrypt_base64_to_string(&file_name) {
+                    match model
+                        .get_crypt()
+                        .decrypt(&model.binary_nonce().into(), file_name.as_ref())
+                    {
                         Ok(file_name) => {
+                            let file_name = String::from_utf8(file_name).expect("Invalid UTF8");
                             model.files.insert(file_name.clone(), (0, vec![]));
                             model.file_buffer.insert(
                                 file_name.clone(),

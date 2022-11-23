@@ -6,9 +6,9 @@ use std::str;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Entry {
-    pub secret: String,
+    pub secret: Vec<u8>,
     pub password: Option<String>,
-    pub file_list: HashMap<String, u128>,
+    pub file_list: HashMap<Vec<u8>, u128>,
 }
 
 impl FromRedisValue for Entry {
@@ -28,7 +28,7 @@ impl FromRedisValue for Entry {
             }
             // Okay and Int are good return values, but I have to return some kind of Entry anyway...
             Value::Okay | Value::Int(_) => Ok(Entry {
-                secret: "".to_string(),
+                secret: vec![],
                 password: None,
                 file_list: HashMap::new(),
             }),

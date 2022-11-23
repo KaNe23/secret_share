@@ -225,7 +225,7 @@ async fn get_secret(params: web::Json<Request>) -> impl Responder {
     let mut file_list = Vec::new();
 
     for (file_name, size) in entry.file_list.iter() {
-        let chunks: Vec<String> = match store.keys(format!("{}-{}-*", key, file_name)).await {
+        let chunks: Vec<String> = match store.keys(format!("{}-{:x?}-*", key, file_name)).await {
             Ok(list) => list,
             Err(e) => {
                 return HttpResponse::Ok().json(Response::Error(format!("Redis error: {}", e)))
@@ -253,7 +253,7 @@ async fn file_chunk(params: web::Json<Request>) -> impl Responder {
     };
 
     println!(
-        "Uuid: {}, File: {}, Index: {}, Data: {}",
+        "Uuid: {}, File: {:x?}, Index: {}, Data: {}",
         uuid,
         file_name,
         chunk_index,
@@ -261,7 +261,7 @@ async fn file_chunk(params: web::Json<Request>) -> impl Responder {
     );
 
     if let Ok(mut store) = get_storage().await {
-        let u_file_name = format!("{}-{}-{}", uuid, file_name, chunk_index);
+        let u_file_name = format!("{}-{:x?}-{}", uuid, file_name, chunk_index);
         // let chunk = Chunk { data: chunk };
         // let result: RedisResult<Chunk> = store.set(u_file_name, chunk).await;
 
@@ -293,7 +293,7 @@ async fn get_file_chunk(params: web::Json<Request>) -> impl Responder {
     };
 
     if let Ok(mut store) = get_storage().await {
-        let u_file_name = format!("{}-{}-{}", uuid, file_name, chunk_index);
+        let u_file_name = format!("{}-{:x?}-{}", uuid, file_name, chunk_index);
         match store.get(u_file_name).await {
             Ok(chunk) => {
                 HttpResponse::Ok().json(Response::FileChunk(file_name, chunk_index, chunk))
