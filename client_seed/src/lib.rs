@@ -1,123 +1,22 @@
+mod secret_share;
+
 use std::collections::HashMap;
 use std::fmt::Display;
 
 use byte_unit::Byte;
-use chacha20poly1305::aead::Aead;
-use chacha20poly1305::*;
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
+use secret_share::SecretShare;
 use seed::{
     attrs, button, div, h1, h5, hr, input, label, option, p, pre, prelude::*, select, style,
     textarea, virtual_dom::Node, C, IF,
 };
 use seed::{nodes, window, JsFuture};
 use serde::{Deserialize, Serialize};
-use shared::{Config, Lifetime};
+use shared::Config;
 use std::str;
 use uuid::Uuid;
 use web_sys::{console, Clipboard, DragEvent, FileList};
-
-#[derive(Default)]
-struct SecretShare {
-    config: Config,
-    encrypt_key: Option<String>,
-    decrypt_key: Option<String>,
-    nonce: Option<String>,
-
-    drop_zone_active: bool,
-    files: HashMap<String, (u128, Vec<u8>)>,
-    file_buffer: HashMap<String, Vec<Vec<u8>>>,
-
-    cryption_in_progress: Option<(u128, u128)>,
-
-    clipboard_button_text: String,
-    uuid: Option<Uuid>,
-    error: Option<String>,
-    password: String,
-    lifetime: Lifetime,
-    secret: Option<String>,
-}
-
-impl SecretShare {
-    fn url(&self) -> String {
-        format!(
-            "{}/{}#{}.{}",
-            self.config.base_url,
-            self.uuid.expect("No uuid set"),
-            self.encrypt_key.as_ref().expect("No encrypt key set"),
-            self.nonce.as_ref().expect("No encrypt key set")
-        )
-    }
-
-    fn binary_encrypt_key(&self) -> [u8; 32] {
-        self.encrypt_key
-            .as_ref()
-            .expect("Not set")
-            .chars()
-            .map(|c| c as u8)
-            .collect::<Vec<_>>()
-            .as_slice()
-            .try_into()
-            .expect("Wrong length")
-    }
-
-    fn binary_decrypt_key(&self) -> [u8; 32] {
-        self.decrypt_key
-            .as_ref()
-            .expect("Not set")
-            .chars()
-            .map(|c| c as u8)
-            .collect::<Vec<_>>()
-            .as_slice()
-            .try_into()
-            .expect("Wrong length")
-    }
-
-    fn binary_nonce(&self) -> [u8; 24] {
-        self.nonce
-            .as_ref()
-            .expect("Not set")
-            .chars()
-            .map(|c| c as u8)
-            .collect::<Vec<_>>()
-            .as_slice()
-            .try_into()
-            .expect("Wrong length")
-    }
-
-    fn get_secret(&self) -> String {
-        if let Some(secret) = &self.secret {
-            secret.clone()
-        } else {
-            "".to_string()
-        }
-    }
-
-    fn file_names(&self) -> Vec<(String, String)> {
-        self.files
-            .iter()
-            .map(|(file_name, _)| {
-                if file_name.len() > 35 {
-                    let abbrev_name = file_name[0..35].to_string();
-                    let ext = file_name[(file_name.len() - 3)..].to_string();
-                    (file_name.clone(), format!("{}…{}", abbrev_name, ext))
-                } else {
-                    (file_name.clone(), file_name.clone())
-                }
-            })
-            .collect()
-    }
-
-    fn get_crypt(&self) -> XChaCha20Poly1305 {
-        if self.decrypt_key.is_some() {
-            XChaCha20Poly1305::new((&self.binary_decrypt_key()).into())
-        } else if self.encrypt_key.is_some() {
-            XChaCha20Poly1305::new((&self.binary_encrypt_key()).into())
-        } else {
-            panic!("No en/decrypt key set")
-        }
-    }
-}
 
 enum Msg {
     LifetimeChanged(String),
@@ -152,7 +51,9 @@ impl Display for SecretShareError {
     }
 }
 
-fn get_uuid_and_hash() -> Option<Result<(Uuid, (String, String)), SecretShareError>> {
+type UuidHashResult = Option<Result<(Uuid, (String, String)), SecretShareError>>;
+
+fn get_uuid_and_hash() -> UuidHashResult {
     let key_len = 32;
     let nonce_len = 24;
     let url = web_sys::window()
@@ -175,7 +76,7 @@ fn get_uuid_and_hash() -> Option<Result<(Uuid, (String, String)), SecretShareErr
                     // hash contains # as first char
                     hash[1..].to_string()
                 };
-                let split = hash.split(".").collect::<Vec<_>>();
+                let split = hash.split('.').collect::<Vec<_>>();
                 let key = split[0];
                 let nonce = split[1];
                 return Some(Ok((uuid, (key.to_string(), nonce.to_string()))));
@@ -271,10 +172,7 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
         Msg::SecretChanged(secret) => model.secret = Some(secret),
         Msg::PasswordChanged(password) => model.password = password,
         Msg::NewSecret => {
-            let encrypted_secret = model
-                .get_crypt()
-                .encrypt(&model.binary_nonce().into(), model.get_secret().as_ref())
-                .expect("Could not enctypt");
+            let encrypted_secret = model.encrypt(model.get_secret().as_ref());
 
             let password = if model.password.is_empty() {
                 None
@@ -287,13 +185,7 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
                     .files
                     .iter()
                     .fold(HashMap::new(), |mut list, (filename, (size, _))| {
-                        list.insert(format!("{:x?}",
-                            model
-                                .get_crypt()
-                                .encrypt(&model.binary_nonce().into(), filename.as_ref())
-                                .expect("Could not encrypt")),
-                            *size,
-                        );
+                        list.insert(format!("{:x?}", model.encrypt(filename.as_ref())), *size);
                         list
                     });
             console::log_1(&"1!".into());
@@ -332,48 +224,33 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
                 shared::Response::Secret(encrypted_secret) => {
                     let (secret, file_list) = (encrypted_secret.0, encrypted_secret.1);
                     // console::log_1(&format!("{:?}", file_list).into());
-                    match model
-                        .get_crypt()
-                        .decrypt(&model.binary_nonce().into(), secret.as_ref())
-                    {
-                        Ok(secret) => {
-                            model.secret = Some(String::from_utf8(secret).expect("Invalid UTF8"))
-                        }
-                        Err(e) => model.error = Some(e.to_string()),
-                    }
+                    model.secret = Some(
+                        String::from_utf8(model.decrypt(secret.as_ref())).expect("Invalid UTF8"),
+                    );
                     if !file_list.is_empty() {
                         orders.send_msg(Msg::DecryptFiles(0, 0, file_list));
                     }
                 }
                 shared::Response::FileChunk(file_name, chunk_index, chunk) => {
-                    let decrypted_chunk = model
-                        .get_crypt()
-                        .decrypt(&model.binary_nonce().into(), chunk.as_ref())
-                        .unwrap();
-                    match model
-                        .get_crypt()
-                        .decrypt(&model.binary_nonce().into(), file_name.as_ref())
-                    {
-                        Ok(file_name) => {
-                            let file_name = String::from_utf8(file_name).expect("Invalid UTF8");
-                            console::log_1(
-                                &format!("File: {} Chunk: {}", file_name, chunk_index).into(),
-                            );
-                            let file = model
-                                .file_buffer
-                                .get_mut(&file_name)
-                                .expect("Could not find element");
-                            console::log_1(&format!("b: {}", chunk_index).into());
-                            file.insert(chunk_index, decrypted_chunk);
-                            console::log_1(&format!("a: {}", chunk_index).into());
+                    let decrypted_chunk = model.decrypt(chunk.as_ref());
+                    let file_name =
+                        String::from_utf8(model.decrypt(file_name.as_ref())).expect("Invalid UTF8");
 
-                            model.cryption_in_progress = Some((
-                                model.cryption_in_progress.unwrap().0 + 1,
-                                model.cryption_in_progress.unwrap().1,
-                            ))
-                        }
-                        Err(_e) => model.error = Some("Could not decrypt chunk".into()),
-                    };
+                    console::log_1(&format!("File: {} Chunk: {}", file_name, chunk_index).into());
+
+                    let file = model
+                        .file_buffer
+                        .get_mut(&file_name)
+                        .expect("Could not find element");
+
+                    console::log_1(&format!("b: {}", chunk_index).into());
+                    file.insert(chunk_index, decrypted_chunk);
+                    console::log_1(&format!("a: {}", chunk_index).into());
+
+                    model.cryption_in_progress = Some((
+                        model.cryption_in_progress.unwrap().0 + 1,
+                        model.cryption_in_progress.unwrap().1,
+                    ))
                 }
                 shared::Response::Ok => (),
                 shared::Response::Error(e) => model.error = Some(e),
@@ -468,19 +345,10 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
                         next_index += 1;
                         next_chunk = 0;
 
-                        model
-                            .get_crypt()
-                            .encrypt(&model.binary_nonce().into(), &data[offset..])
-                            .expect("Could not encrypt")
+                        model.encrypt(&data[offset..])
                     } else {
                         next_chunk = position + 1;
-                        model
-                            .get_crypt()
-                            .encrypt(
-                                &model.binary_nonce().into(),
-                                &data[offset..(offset + model.config.chunk_size)],
-                            )
-                            .expect("Could not encrypt")
+                        model.encrypt(&data[offset..(offset + model.config.chunk_size)])
                     };
 
                     // new_magic_crypt!(model.encrypt_key.clone().unwrap(), 256, "AES")
@@ -495,10 +363,7 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
                     ));
 
                     let uuid = model.uuid.expect("no Uuid");
-                    let file_name = model
-                        .get_crypt()
-                        .encrypt(&model.binary_nonce().into(), file_name.as_ref())
-                        .expect("Could not encrypt");
+                    let file_name = model.encrypt(file_name.as_ref());
                     let request = shared::Request::SendFileChunk {
                         uuid,
                         file_name,
@@ -525,22 +390,12 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
                     file_list.iter().fold(0, |acc, amount| acc + amount.1) as u128,
                 ));
                 for (file_name, _chunks) in file_list.iter() {
-                    match model
-                        .get_crypt()
-                        .decrypt(&model.binary_nonce().into(), file_name.as_ref())
-                    {
-                        Ok(file_name) => {
-                            let file_name = String::from_utf8(file_name).expect("Invalid UTF8");
-                            model.files.insert(file_name.clone(), (0, vec![]));
-                            model.file_buffer.insert(
-                                file_name.clone(),
-                                vec![vec![]; file_list[current_index].1],
-                            );
-                        }
-                        Err(_e) => {
-                            model.error = Some("Could not decrypt file name".into());
-                        }
-                    };
+                    let file_name =
+                        String::from_utf8(model.decrypt(file_name.as_ref())).expect("Invalid UTF8");
+                    model.files.insert(file_name.clone(), (0, vec![]));
+                    model
+                        .file_buffer
+                        .insert(file_name.clone(), vec![vec![]; file_list[current_index].1]);
                 }
             } else {
                 // model.cryption_in_progress = Some((

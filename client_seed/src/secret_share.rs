@@ -1,0 +1,103 @@
+use chacha20poly1305::aead::Aead;
+use chacha20poly1305::*;
+use shared::Config;
+use shared::Lifetime;
+use std::collections::HashMap;
+use uuid::Uuid;
+
+#[derive(Default)]
+pub struct SecretShare {
+    pub config: Config,
+    pub encrypt_key: Option<String>,
+    pub decrypt_key: Option<String>,
+    pub nonce: Option<String>,
+
+    pub drop_zone_active: bool,
+    pub files: HashMap<String, (u128, Vec<u8>)>,
+    pub file_buffer: HashMap<String, Vec<Vec<u8>>>,
+
+    pub cryption_in_progress: Option<(u128, u128)>,
+
+    pub clipboard_button_text: String,
+    pub uuid: Option<Uuid>,
+    pub error: Option<String>,
+    pub password: String,
+    pub lifetime: Lifetime,
+    pub secret: Option<String>,
+}
+
+impl SecretShare {
+    pub fn url(&self) -> String {
+        format!(
+            "{}/{}#{}.{}",
+            self.config.base_url,
+            self.uuid.expect("No uuid set"),
+            self.encrypt_key.as_ref().expect("No encrypt key set"),
+            self.nonce.as_ref().expect("No encrypt key set")
+        )
+    }
+
+    pub fn decrypt(&self, data: &[u8]) -> Vec<u8> {
+        self.get_crypt()
+            .decrypt(&self.binary_nonce().into(), data)
+            .expect("Could not decrypt")
+    }
+
+    pub fn encrypt(&self, data: &[u8]) -> Vec<u8> {
+        self.get_crypt()
+            .encrypt(&self.binary_nonce().into(), data)
+            .expect("Could not encrypt")
+    }
+
+    pub fn to_binary(&self, key: String) -> Vec<u8> {
+        key.chars().map(|c| c as u8).collect::<Vec<_>>()
+    }
+
+    pub fn binary_encrypt_key(&self) -> [u8; 32] {
+        let key = self.encrypt_key.clone().expect("Not set");
+        self.to_binary(key).try_into().expect("Wrong length")
+    }
+
+    pub fn binary_decrypt_key(&self) -> [u8; 32] {
+        let key = self.decrypt_key.clone().expect("Not set");
+        self.to_binary(key).try_into().expect("Wrong length")
+    }
+
+    pub fn binary_nonce(&self) -> [u8; 24] {
+        let key = self.nonce.clone().expect("Not set");
+        self.to_binary(key).try_into().expect("Wrong length")
+    }
+
+    pub fn get_secret(&self) -> String {
+        if let Some(secret) = &self.secret {
+            secret.clone()
+        } else {
+            "".to_string()
+        }
+    }
+
+    pub fn file_names(&self) -> Vec<(String, String)> {
+        self.files
+            .iter()
+            .map(|(file_name, _)| {
+                if file_name.len() > 35 {
+                    let abbrev_name = file_name[0..35].to_string();
+                    let ext = file_name[(file_name.len() - 3)..].to_string();
+                    (file_name.clone(), format!("{}…{}", abbrev_name, ext))
+                } else {
+                    (file_name.clone(), file_name.clone())
+                }
+            })
+            .collect()
+    }
+
+    pub fn get_crypt(&self) -> XChaCha20Poly1305 {
+        if self.decrypt_key.is_some() {
+            XChaCha20Poly1305::new((&self.binary_decrypt_key()).into())
+        } else if self.encrypt_key.is_some() {
+            XChaCha20Poly1305::new((&self.binary_encrypt_key()).into())
+        } else {
+            panic!("No en/decrypt key set")
+        }
+    }
+}
