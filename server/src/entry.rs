@@ -8,7 +8,7 @@ use std::str;
 pub struct Entry {
     pub secret: Vec<u8>,
     pub password: Option<String>,
-    pub file_list: HashMap<Vec<u8>, u128>,
+    pub file_list: HashMap<String, u128>,
 }
 
 impl FromRedisValue for Entry {

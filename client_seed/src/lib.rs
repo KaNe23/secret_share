@@ -135,7 +135,7 @@ enum Msg {
     FileRead((String, u128, Vec<u8>)),
     RemoveFile(String),
     EncryptFiles(usize, usize),
-    DecryptFiles(usize, usize, Vec<(Vec<u8>, usize)>),
+    DecryptFiles(usize, usize, Vec<(String, usize)>),
 }
 
 enum SecretShareError {
@@ -251,6 +251,7 @@ where
     V: Serialize,
     T: for<'de> Deserialize<'de> + 'static,
 {
+    console::log_1(&"Request!".into());
     Request::new(url)
         .method(Method::Post)
         .json(variables)?
@@ -286,25 +287,27 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
                     .files
                     .iter()
                     .fold(HashMap::new(), |mut list, (filename, (size, _))| {
-                        list.insert(
+                        list.insert(format!("{:x?}",
                             model
                                 .get_crypt()
                                 .encrypt(&model.binary_nonce().into(), filename.as_ref())
-                                .expect("Could not encrypt"),
+                                .expect("Could not encrypt")),
                             *size,
                         );
                         list
                     });
-            // console::log_1(&"1!".into());
+            console::log_1(&"1!".into());
             let request = shared::Request::CreateSecret {
                 encrypted_secret,
                 password,
                 lifetime: model.lifetime,
                 file_list,
             };
-            // console::log_1(&"2!".into());
+            console::log_1(&"2!".into());
             orders.perform_cmd(async move {
-                Msg::Response(send_request(&request, "/new_secret").await)
+                let response = send_request(&request, "/new_secret").await;
+                console::log_1(&"Response!".into());
+                Msg::Response(response)
             });
         }
         Msg::GetSecret => {
