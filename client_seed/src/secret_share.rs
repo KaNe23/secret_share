@@ -1,16 +1,20 @@
 use chacha20poly1305::aead::Aead;
 use chacha20poly1305::*;
+use rand::distributions::Alphanumeric;
+use rand::thread_rng;
+use rand::Rng;
 use shared::Config;
+use shared::EncryptedData;
 use shared::Lifetime;
 use std::collections::HashMap;
 use uuid::Uuid;
+use web_sys::console;
 
 #[derive(Default)]
 pub struct SecretShare {
     pub config: Config,
     pub encrypt_key: Option<String>,
     pub decrypt_key: Option<String>,
-    pub nonce: Option<String>,
 
     pub drop_zone_active: bool,
     pub files: HashMap<String, (u128, Vec<u8>)>,
@@ -29,24 +33,48 @@ pub struct SecretShare {
 impl SecretShare {
     pub fn url(&self) -> String {
         format!(
-            "{}/{}#{}.{}",
+            "{}/{}#{}",
             self.config.base_url,
             self.uuid.expect("No uuid set"),
-            self.encrypt_key.as_ref().expect("No encrypt key set"),
-            self.nonce.as_ref().expect("No encrypt key set")
+            self.encrypt_key.as_ref().expect("No encrypt key set")
         )
     }
 
-    pub fn decrypt(&self, data: &[u8]) -> Vec<u8> {
+    pub fn decrypt(&self, data: EncryptedData) -> Vec<u8> {
+        console::log_1(
+            &format!(
+                "Decrypt with key: {:?} nonce: {:?}",
+                self.decrypt_key, data.nonce
+            )
+            .into(),
+        );
         self.get_crypt()
-            .decrypt(&self.binary_nonce().into(), data)
+            .decrypt(&self.binary_nonce(data.nonce).into(), data.data.as_ref())
             .expect("Could not decrypt")
     }
 
-    pub fn encrypt(&self, data: &[u8]) -> Vec<u8> {
-        self.get_crypt()
-            .encrypt(&self.binary_nonce().into(), data)
-            .expect("Could not encrypt")
+    fn generate_nonce(&self) -> String {
+        thread_rng()
+        .sample_iter(Alphanumeric)
+        .take(24) // ChaCha20 needs key length of 24
+        .map(char::from)
+        .collect::<String>()
+    }
+
+    pub fn encrypt(&self, data: &[u8]) -> EncryptedData {
+        let nonce = self.generate_nonce();
+
+        console::log_1(
+            &format!(
+                "Encrypt with key: {:?} nonce: {:?}",
+                self.encrypt_key, nonce
+            )
+            .into(),
+        );
+        let data = self.get_crypt()
+            .encrypt(&self.binary_nonce(nonce.clone()).into(), data)
+            .expect("Could not encrypt");
+        EncryptedData{data, nonce}
     }
 
     pub fn to_binary(&self, key: String) -> Vec<u8> {
@@ -63,9 +91,8 @@ impl SecretShare {
         self.to_binary(key).try_into().expect("Wrong length")
     }
 
-    pub fn binary_nonce(&self) -> [u8; 24] {
-        let key = self.nonce.clone().expect("Not set");
-        self.to_binary(key).try_into().expect("Wrong length")
+    pub fn binary_nonce(&self, nonce: String) -> [u8; 24] {
+        self.to_binary(nonce).try_into().expect("Wrong length")
     }
 
     pub fn get_secret(&self) -> String {

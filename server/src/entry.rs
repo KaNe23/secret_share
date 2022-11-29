@@ -1,12 +1,13 @@
 use redis::{ErrorKind, FromRedisValue, RedisError, RedisResult, RedisWrite, ToRedisArgs, Value};
 use serde::{Deserialize, Serialize};
 use serde_json::{from_str, to_string};
+use shared::EncryptedData;
 use std::collections::HashMap;
 use std::str;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Entry {
-    pub secret: Vec<u8>,
+    pub secret: EncryptedData,
     pub password: Option<String>,
     pub file_list: HashMap<String, u128>,
 }
@@ -28,7 +29,7 @@ impl FromRedisValue for Entry {
             }
             // Okay and Int are good return values, but I have to return some kind of Entry anyway...
             Value::Okay | Value::Int(_) => Ok(Entry {
-                secret: vec![],
+                secret: EncryptedData { data: vec![], nonce: "".to_string() },
                 password: None,
                 file_list: HashMap::new(),
             }),

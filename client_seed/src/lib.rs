@@ -13,7 +13,7 @@ use seed::{
 };
 use seed::{nodes, window, JsFuture};
 use serde::{Deserialize, Serialize};
-use shared::Config;
+use shared::{Config, EncryptedData};
 use std::str;
 use uuid::Uuid;
 use web_sys::{console, Clipboard, DragEvent, FileList};
@@ -51,11 +51,10 @@ impl Display for SecretShareError {
     }
 }
 
-type UuidHashResult = Option<Result<(Uuid, (String, String)), SecretShareError>>;
+type UuidHashResult = Option<Result<(Uuid, String), SecretShareError>>;
 
 fn get_uuid_and_hash() -> UuidHashResult {
     let key_len = 32;
-    let nonce_len = 24;
     let url = web_sys::window()
         .and_then(|window| window.document())
         .and_then(|document| document.url().ok())
@@ -69,17 +68,14 @@ fn get_uuid_and_hash() -> UuidHashResult {
             if let Ok(uuid) = Uuid::parse_str(&pathname[1..]) {
                 let hash = if hash.is_empty() {
                     return Some(Err(SecretShareError::KeyMissing));
-                } else if (hash.len() - 2) != (key_len + nonce_len) as usize {
-                    // - 2 for # and devider .
+                } else if (hash.len() - 1) != key_len as usize {
                     return Some(Err(SecretShareError::InvalidKeyLength));
                 } else {
                     // hash contains # as first char
-                    hash[1..].to_string()
+                    hash.trim_start_matches('#').to_string()
                 };
-                let split = hash.split('.').collect::<Vec<_>>();
-                let key = split[0];
-                let nonce = split[1];
-                return Some(Ok((uuid, (key.to_string(), nonce.to_string()))));
+
+                return Some(Ok((uuid, hash)));
             }
         }
     }
@@ -99,7 +95,6 @@ fn init(_: Url, _: &mut impl Orders<Msg>) -> SecretShare {
 
     let mut encrypt_key = None;
     let mut decrypt_key = None;
-    let mut nonce = None;
     let mut error = None;
     let mut uuid = None;
 
@@ -109,9 +104,8 @@ fn init(_: Url, _: &mut impl Orders<Msg>) -> SecretShare {
     } else {
         match get_uuid_and_hash() {
             Some(result) => match result {
-                Ok((url_uuid, (key, nonce_key))) => {
+                Ok((url_uuid, key)) => {
                     decrypt_key = Some(key);
-                    nonce = Some(nonce_key);
                     uuid = Some(url_uuid);
                 }
                 Err(e) => error = Some(e.to_string()),
@@ -124,13 +118,6 @@ fn init(_: Url, _: &mut impl Orders<Msg>) -> SecretShare {
                         .map(char::from)
                         .collect::<String>(),
                 );
-                nonce = Some(
-                    (&mut thread_rng())
-                        .sample_iter(Alphanumeric)
-                        .take(24) // ChaCha20 needs key length of 24
-                        .map(char::from)
-                        .collect::<String>(),
-                );
             }
         }
     }
@@ -139,7 +126,6 @@ fn init(_: Url, _: &mut impl Orders<Msg>) -> SecretShare {
         config,
         encrypt_key,
         decrypt_key,
-        nonce,
         error,
         uuid,
         clipboard_button_text: "Copy to Clipboard".into(),
@@ -152,7 +138,6 @@ where
     V: Serialize,
     T: for<'de> Deserialize<'de> + 'static,
 {
-    console::log_1(&"Request!".into());
     Request::new(url)
         .method(Method::Post)
         .json(variables)?
@@ -172,7 +157,7 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
         Msg::SecretChanged(secret) => model.secret = Some(secret),
         Msg::PasswordChanged(password) => model.password = password,
         Msg::NewSecret => {
-            let encrypted_secret = model.encrypt(model.get_secret().as_ref());
+            let secret = model.encrypt(model.get_secret().as_ref());
 
             let password = if model.password.is_empty() {
                 None
@@ -185,20 +170,20 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
                     .files
                     .iter()
                     .fold(HashMap::new(), |mut list, (filename, (size, _))| {
-                        list.insert(format!("{:x?}", model.encrypt(filename.as_ref())), *size);
+                        let file_name = model.encrypt(filename.as_ref());
+                        list.insert(file_name.to_string(), *size);
                         list
                     });
-            console::log_1(&"1!".into());
+
             let request = shared::Request::CreateSecret {
-                encrypted_secret,
+                secret,
                 password,
                 lifetime: model.lifetime,
                 file_list,
             };
-            console::log_1(&"2!".into());
+
             orders.perform_cmd(async move {
                 let response = send_request(&request, "/new_secret").await;
-                console::log_1(&"Response!".into());
                 Msg::Response(response)
             });
         }
@@ -222,30 +207,33 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
                     }
                 }
                 shared::Response::Secret(encrypted_secret) => {
-                    let (secret, file_list) = (encrypted_secret.0, encrypted_secret.1);
+                    let (secret, file_list) =
+                        (encrypted_secret.0, encrypted_secret.1);
                     // console::log_1(&format!("{:?}", file_list).into());
+                    console::log_1(&"Decypt Secret".into());
                     model.secret = Some(
-                        String::from_utf8(model.decrypt(secret.as_ref())).expect("Invalid UTF8"),
+                        String::from_utf8(model.decrypt(secret))
+                            .expect("Invalid UTF8"),
                     );
                     if !file_list.is_empty() {
                         orders.send_msg(Msg::DecryptFiles(0, 0, file_list));
                     }
                 }
-                shared::Response::FileChunk(file_name, chunk_index, chunk) => {
-                    let decrypted_chunk = model.decrypt(chunk.as_ref());
+                shared::Response::FileChunk(file_chunk) => {
+                    console::log_1(&"Decypt Chunk".into());
+                    let decrypted_chunk = model.decrypt(file_chunk.chunk);
+                    console::log_1(&"Decypt Filename".into());
                     let file_name =
-                        String::from_utf8(model.decrypt(file_name.as_ref())).expect("Invalid UTF8");
+                        String::from_utf8(model.decrypt(file_chunk.file_name)).expect("Invalid UTF8");
 
-                    console::log_1(&format!("File: {} Chunk: {}", file_name, chunk_index).into());
+                    console::log_1(&format!("File: {} Chunk: {}", file_name, file_chunk.index).into());
 
                     let file = model
                         .file_buffer
                         .get_mut(&file_name)
                         .expect("Could not find element");
 
-                    console::log_1(&format!("b: {}", chunk_index).into());
-                    file.insert(chunk_index, decrypted_chunk);
-                    console::log_1(&format!("a: {}", chunk_index).into());
+                    file.insert(file_chunk.index, decrypted_chunk);
 
                     model.cryption_in_progress = Some((
                         model.cryption_in_progress.unwrap().0 + 1,
@@ -332,6 +320,7 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
                     .files
                     .iter()
                     .fold(0, |acc, (_, (_, data))| acc + data.len());
+                console::log_1(&format!("Progres1: {}, {}", 0, sum_data).into());
                 model.cryption_in_progress = Some((0, sum_data as u128));
             };
 
@@ -357,8 +346,9 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
 
                     // save to unwrap, because its getting set in the if statement before the loop
                     let cur_progress = model.cryption_in_progress.unwrap();
+                    console::log_1(&format!("Progres2: {}, {}", cur_progress.0 + encrypted_chunk.data.len() as u128, cur_progress.1).into());
                     model.cryption_in_progress = Some((
-                        cur_progress.0 + encrypted_chunk.len() as u128,
+                        cur_progress.0 + encrypted_chunk.data.len() as u128,
                         cur_progress.1,
                     ));
 
@@ -379,19 +369,25 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
             }
 
             if current_index > model.files.len() - 1 {
+                console::log_1(&format!("Progres3: None").into());
                 model.cryption_in_progress = None;
-                console::log_1(&"Done".into());
             }
         }
         Msg::DecryptFiles(current_index, chunk, file_list) => {
+            console::log_1(&format!("file_list: {:?}", file_list).into());
             if model.cryption_in_progress.is_none() {
+                let amount = file_list.iter().fold(0, |acc, amount| acc + amount.1) as u128;
+                console::log_1(&format!("Progres4: {}, {}", chunk, amount).into());
                 model.cryption_in_progress = Some((
                     chunk as u128,
-                    file_list.iter().fold(0, |acc, amount| acc + amount.1) as u128,
+                    amount
                 ));
                 for (file_name, _chunks) in file_list.iter() {
+                    console::log_1(&"Decypt Filename".into());
+
+                    let encrypted_data: EncryptedData = file_name.parse().expect("Could not parse file name");
                     let file_name =
-                        String::from_utf8(model.decrypt(file_name.as_ref())).expect("Invalid UTF8");
+                        String::from_utf8(model.decrypt(encrypted_data)).expect("Invalid UTF8");
                     model.files.insert(file_name.clone(), (0, vec![]));
                     model
                         .file_buffer
@@ -406,7 +402,7 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
 
             let request = shared::Request::GetFileChunk {
                 uuid: model.uuid.expect("no uuid"),
-                file_name: file_list[current_index].0.clone(),
+                file_name: file_list[current_index].0.clone().to_string(),
                 chunk_index: chunk,
             };
             orders.perform_cmd(async move {
@@ -415,8 +411,6 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
             // check for last file and chunk
             if current_index == file_list.len() - 1 && chunk == file_list[current_index].1 {
                 // model.cryption_in_progress = None;
-                console::log_1(&"\"Done\"".into());
-                // console::log_1(&format!("{:?}", model.files).into());
             } else {
                 let (next_index, next_chunk) = if chunk < file_list[current_index].1 {
                     (current_index, chunk + 1)

@@ -14,18 +14,25 @@ use askama::Template;
 use byte_unit::Byte;
 use lazy_static::lazy_static;
 use redis::{
-    aio::Connection, AsyncCommands, Client, ErrorKind, FromRedisValue, RedisError, RedisResult,
+    aio::Connection, AsyncCommands, Client,
+    ErrorKind, FromRedisValue, RedisError,
+    RedisResult,
     RedisWrite, ToRedisArgs, Value,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{from_str, to_string};
-use shared::{Config, Lifetime, Request, Response};
+use shared::{Config, Lifetime, Request, Response, FileChunk};
 use std::{
-    collections::{hash_map, HashMap},
+    collections::{
+        hash_map,
+        HashMap},
     fmt::format,
     hash::Hash,
     str::FromStr,
-    sync::{Arc, RwLock},
+    sync::{
+        Arc,
+        RwLock},
+    f64::consts::E,
 };
 use uuid::Uuid;
 
@@ -220,12 +227,13 @@ async fn get_secret(params: web::Json<Request>) -> impl Responder {
     if let Err(msg) = result {
         return HttpResponse::InternalServerError().body(format!("Error: {}", msg));
     }
-
+    print!("{:?}", entry.file_list);
     // let mut file_list = HashMap::new();
     let mut file_list = Vec::new();
 
     for (file_name, size) in entry.file_list.iter() {
-        let chunks: Vec<String> = match store.keys(format!("{}-{:x?}-*", key, file_name)).await {
+        println!("key: {}", format!("{}-{}-*", key, file_name));
+        let chunks: Vec<String> = match store.keys(format!("{}-{}-*", key, file_name)).await {
             Ok(list) => list,
             Err(e) => {
                 return HttpResponse::Ok().json(Response::Error(format!("Redis error: {}", e)))
@@ -233,6 +241,7 @@ async fn get_secret(params: web::Json<Request>) -> impl Responder {
         };
         // file_list.insert(file_name.clone(), (*size, chunks.len()));
         file_list.push((file_name.clone(), chunks.len()));
+        // file_list.push((file_name.clone(), *size as usize));
     }
 
     HttpResponse::Ok().json(Response::Secret((entry.secret, file_list)))
@@ -257,15 +266,15 @@ async fn file_chunk(params: web::Json<Request>) -> impl Responder {
         uuid,
         file_name,
         chunk_index,
-        chunk.len()
+        chunk.data.len()
     );
 
     if let Ok(mut store) = get_storage().await {
-        let u_file_name = format!("{}-{:x?}-{}", uuid, file_name, chunk_index);
+        let u_file_name = format!("{}-{}-{}", uuid, file_name.to_string(), chunk_index);
         // let chunk = Chunk { data: chunk };
         // let result: RedisResult<Chunk> = store.set(u_file_name, chunk).await;
 
-        let result: RedisResult<String> = store.set(u_file_name, chunk).await;
+        let result: RedisResult<String> = store.set(u_file_name, chunk.to_string()).await;
 
         // if lock.contains_key(&u_file_name) {
         //     let chunks = lock.get_mut(&u_file_name).unwrap();
@@ -293,10 +302,12 @@ async fn get_file_chunk(params: web::Json<Request>) -> impl Responder {
     };
 
     if let Ok(mut store) = get_storage().await {
-        let u_file_name = format!("{}-{:x?}-{}", uuid, file_name, chunk_index);
+        let u_file_name = format!("{}-{}-{}", uuid, file_name, chunk_index);
         match store.get(u_file_name).await {
             Ok(chunk) => {
-                HttpResponse::Ok().json(Response::FileChunk(file_name, chunk_index, chunk))
+                let nom: String = chunk;
+                let fc: FileChunk = FileChunk { file_name: file_name.parse().expect("could not parse"), index: chunk_index, chunk: nom.parse().expect("could not parse") };
+                HttpResponse::Ok().json(Response::FileChunk(fc))
             }
             Err(e) => HttpResponse::Ok().json(Response::Error(format!("Redis error: {}", e))),
         }
@@ -308,7 +319,7 @@ async fn get_file_chunk(params: web::Json<Request>) -> impl Responder {
 #[post("/new_secret")]
 async fn new_secret(params: web::Json<Request>) -> impl Responder {
     let (secret, password, lifetime, file_list) = if let Json(Request::CreateSecret {
-        encrypted_secret,
+        secret,
         password,
         lifetime,
         file_list,
@@ -325,7 +336,7 @@ async fn new_secret(params: web::Json<Request>) -> impl Responder {
             None
         };
 
-        (encrypted_secret, password, lifetime, file_list)
+        (secret, password, lifetime, file_list)
     } else {
         return HttpResponse::BadRequest().finish();
     };

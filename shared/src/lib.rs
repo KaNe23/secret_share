@@ -3,19 +3,55 @@ use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, fmt::Display, num::ParseIntError, str::FromStr};
 use uuid::Uuid;
 
+#[derive(Serialize, Deserialize, Clone, Debug, Hash, PartialEq, Eq)]
+pub struct EncryptedData {
+    pub data: Vec<u8>,
+    pub nonce: String,
+}
+
+impl ToString for EncryptedData {
+    fn to_string(&self) -> String {
+        let data = hex::encode(&self.data);
+        format!("{}.{}", data, self.nonce)
+    }
+}
+
+#[derive(Debug)]
+pub struct DecodeError;
+
+impl FromStr for EncryptedData {
+    type Err = DecodeError;
+
+    fn from_str(string: &str) -> Result<Self, Self::Err> {
+        let mut parts = string.split('.').into_iter();
+        let data_part = parts.next();
+        let nonce_part = parts.next();
+        if data_part.is_some() && nonce_part.is_some() {
+            let data = hex::decode(data_part.unwrap()).expect("Could not decode hex value");
+            Ok(EncryptedData {
+                data,
+                nonce: nonce_part.unwrap().to_string(),
+            })
+        } else {
+            Err(DecodeError)
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 pub enum Request {
     CreateSecret {
-        encrypted_secret: Vec<u8>,
+        secret: EncryptedData,
         password: Option<String>,
         lifetime: Lifetime,
+        // file_list: HashMap<String, u128>,
         file_list: HashMap<String, u128>,
     },
     SendFileChunk {
         uuid: Uuid,
-        file_name: Vec<u8>,
+        file_name: EncryptedData,
         chunk_index: usize,
-        chunk: Vec<u8>,
+        chunk: EncryptedData,
     },
     GetFileChunk {
         uuid: Uuid,
@@ -121,10 +157,17 @@ impl Lifetime {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
+pub struct FileChunk {
+    pub file_name: EncryptedData,
+    pub index: usize,
+    pub chunk: EncryptedData,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
 pub enum Response {
     Error(String),
-    Secret((Vec<u8>, Vec<(String, usize)>)),
-    FileChunk(String, usize, Vec<u8>),
+    Secret((EncryptedData, Vec<(String, usize)>)),
+    FileChunk(FileChunk),
     Uuid(Uuid),
     Ok,
 }
