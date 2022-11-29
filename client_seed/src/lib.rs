@@ -207,14 +207,11 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
                     }
                 }
                 shared::Response::Secret(encrypted_secret) => {
-                    let (secret, file_list) =
-                        (encrypted_secret.0, encrypted_secret.1);
+                    let (secret, file_list) = (encrypted_secret.0, encrypted_secret.1);
                     // console::log_1(&format!("{:?}", file_list).into());
                     console::log_1(&"Decypt Secret".into());
-                    model.secret = Some(
-                        String::from_utf8(model.decrypt(secret))
-                            .expect("Invalid UTF8"),
-                    );
+                    model.secret =
+                        Some(String::from_utf8(model.decrypt(secret)).expect("Invalid UTF8"));
                     if !file_list.is_empty() {
                         orders.send_msg(Msg::DecryptFiles(0, 0, file_list));
                     }
@@ -223,10 +220,12 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
                     console::log_1(&"Decypt Chunk".into());
                     let decrypted_chunk = model.decrypt(file_chunk.chunk);
                     console::log_1(&"Decypt Filename".into());
-                    let file_name =
-                        String::from_utf8(model.decrypt(file_chunk.file_name)).expect("Invalid UTF8");
+                    let file_name = String::from_utf8(model.decrypt(file_chunk.file_name))
+                        .expect("Invalid UTF8");
 
-                    console::log_1(&format!("File: {} Chunk: {}", file_name, file_chunk.index).into());
+                    console::log_1(
+                        &format!("File: {} Chunk: {}", file_name, file_chunk.index).into(),
+                    );
 
                     let file = model
                         .file_buffer
@@ -346,7 +345,14 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
 
                     // save to unwrap, because its getting set in the if statement before the loop
                     let cur_progress = model.cryption_in_progress.unwrap();
-                    console::log_1(&format!("Progres2: {}, {}", cur_progress.0 + encrypted_chunk.data.len() as u128, cur_progress.1).into());
+                    console::log_1(
+                        &format!(
+                            "Progres2: {}, {}",
+                            cur_progress.0 + encrypted_chunk.data.len() as u128,
+                            cur_progress.1
+                        )
+                        .into(),
+                    );
                     model.cryption_in_progress = Some((
                         cur_progress.0 + encrypted_chunk.data.len() as u128,
                         cur_progress.1,
@@ -378,14 +384,12 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
             if model.cryption_in_progress.is_none() {
                 let amount = file_list.iter().fold(0, |acc, amount| acc + amount.1) as u128;
                 console::log_1(&format!("Progres4: {}, {}", chunk, amount).into());
-                model.cryption_in_progress = Some((
-                    chunk as u128,
-                    amount
-                ));
+                model.cryption_in_progress = Some((chunk as u128, amount));
                 for (file_name, _chunks) in file_list.iter() {
                     console::log_1(&"Decypt Filename".into());
 
-                    let encrypted_data: EncryptedData = file_name.parse().expect("Could not parse file name");
+                    let encrypted_data: EncryptedData =
+                        file_name.parse().expect("Could not parse file name");
                     let file_name =
                         String::from_utf8(model.decrypt(encrypted_data)).expect("Invalid UTF8");
                     model.files.insert(file_name.clone(), (0, vec![]));

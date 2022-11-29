@@ -23,15 +23,19 @@ impl FromStr for EncryptedData {
     type Err = DecodeError;
 
     fn from_str(string: &str) -> Result<Self, Self::Err> {
-        let mut parts = string.split('.').into_iter();
+        let mut parts = string.split('.');
         let data_part = parts.next();
         let nonce_part = parts.next();
-        if data_part.is_some() && nonce_part.is_some() {
-            let data = hex::decode(data_part.unwrap()).expect("Could not decode hex value");
-            Ok(EncryptedData {
-                data,
-                nonce: nonce_part.unwrap().to_string(),
-            })
+        if let Some(data) = data_part {
+            if let Some(nonce) = nonce_part {
+                let data = hex::decode(data).expect("Could not decode hex value");
+                Ok(EncryptedData {
+                    data,
+                    nonce: nonce.to_string(),
+                })
+            } else {
+                Err(DecodeError)
+            }
         } else {
             Err(DecodeError)
         }
@@ -49,13 +53,13 @@ pub enum Request {
     },
     SendFileChunk {
         uuid: Uuid,
-        file_name: EncryptedData,
+        file_name: HashString,
         chunk_index: usize,
         chunk: EncryptedData,
     },
     GetFileChunk {
         uuid: Uuid,
-        file_name: String,
+        file_name: HashString,
         chunk_index: usize,
     },
     GetSecret {
@@ -157,8 +161,27 @@ impl Lifetime {
 }
 
 #[derive(Serialize, Deserialize, Clone)]
+pub struct HashString(String);
+
+impl HashString {
+    pub fn new<T>(string: String) -> HashString
+    where
+        T: ?Sized + ToString,
+    {
+        HashString(format!("{:x}", md5::compute(string)))
+    }
+}
+
+impl fmt::Display for HashString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)?;
+        Ok(())
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
 pub struct FileChunk {
-    pub file_name: EncryptedData,
+    pub file_name: HashString,
     pub index: usize,
     pub chunk: EncryptedData,
 }

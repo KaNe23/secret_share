@@ -13,3 +13,4 @@ uuid = { version = "1.1.2", features = ["serde", "v4"] }
 byte-unit = "4.0.14"
 redis = { version = "0.21.6" }
 hex = "0.4.3"
+md5 = "0.7.0"

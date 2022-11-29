@@ -14,25 +14,19 @@ use askama::Template;
 use byte_unit::Byte;
 use lazy_static::lazy_static;
 use redis::{
-    aio::Connection, AsyncCommands, Client,
-    ErrorKind, FromRedisValue, RedisError,
-    RedisResult,
+    aio::Connection, AsyncCommands, Client, ErrorKind, FromRedisValue, RedisError, RedisResult,
     RedisWrite, ToRedisArgs, Value,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{from_str, to_string};
-use shared::{Config, Lifetime, Request, Response, FileChunk};
+use shared::{Config, FileChunk, Lifetime, Request, Response};
 use std::{
-    collections::{
-        hash_map,
-        HashMap},
+    collections::{hash_map, HashMap},
+    f64::consts::E,
     fmt::format,
     hash::Hash,
     str::FromStr,
-    sync::{
-        Arc,
-        RwLock},
-    f64::consts::E,
+    sync::{Arc, RwLock},
 };
 use uuid::Uuid;
 
@@ -270,7 +264,7 @@ async fn file_chunk(params: web::Json<Request>) -> impl Responder {
     );
 
     if let Ok(mut store) = get_storage().await {
-        let u_file_name = format!("{}-{}-{}", uuid, file_name.to_string(), chunk_index);
+        let u_file_name = format!("{}-{}-{}", uuid, file_name, chunk_index);
         // let chunk = Chunk { data: chunk };
         // let result: RedisResult<Chunk> = store.set(u_file_name, chunk).await;
 
@@ -306,7 +300,11 @@ async fn get_file_chunk(params: web::Json<Request>) -> impl Responder {
         match store.get(u_file_name).await {
             Ok(chunk) => {
                 let nom: String = chunk;
-                let fc: FileChunk = FileChunk { file_name: file_name.parse().expect("could not parse"), index: chunk_index, chunk: nom.parse().expect("could not parse") };
+                let fc: FileChunk = FileChunk {
+                    file_name: file_name.parse().expect("could not parse"),
+                    index: chunk_index,
+                    chunk: nom.parse().expect("could not parse"),
+                };
                 HttpResponse::Ok().json(Response::FileChunk(fc))
             }
             Err(e) => HttpResponse::Ok().json(Response::Error(format!("Redis error: {}", e))),
