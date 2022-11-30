@@ -1,13 +1,66 @@
+use core::fmt;
 use serde::{Deserialize, Serialize};
-use std::fmt::Display;
+use std::{collections::HashMap, fmt::Display, num::ParseIntError, str::FromStr};
 use uuid::Uuid;
+
+#[derive(Serialize, Deserialize, Clone, Debug, Hash, PartialEq, Eq)]
+pub struct EncryptedData {
+    pub data: Vec<u8>,
+    pub nonce: String,
+}
+
+impl ToString for EncryptedData {
+    fn to_string(&self) -> String {
+        let data = hex::encode(&self.data);
+        format!("{}.{}", data, self.nonce)
+    }
+}
+
+#[derive(Debug)]
+pub struct DecodeError;
+
+impl FromStr for EncryptedData {
+    type Err = DecodeError;
+
+    fn from_str(string: &str) -> Result<Self, Self::Err> {
+        let mut parts = string.split('.');
+        let data_part = parts.next();
+        let nonce_part = parts.next();
+        if let Some(data) = data_part {
+            if let Some(nonce) = nonce_part {
+                let data = hex::decode(data).expect("Could not decode hex value");
+                Ok(EncryptedData {
+                    data,
+                    nonce: nonce.to_string(),
+                })
+            } else {
+                Err(DecodeError)
+            }
+        } else {
+            Err(DecodeError)
+        }
+    }
+}
 
 #[derive(Serialize, Deserialize)]
 pub enum Request {
     CreateSecret {
-        encrypted_secret: String,
+        secret: EncryptedData,
         password: Option<String>,
         lifetime: Lifetime,
+        // file_list: HashMap<String, u128>,
+        file_list: HashMap<String, u128>,
+    },
+    SendFileChunk {
+        uuid: Uuid,
+        file_name: HashString,
+        chunk_index: usize,
+        chunk: EncryptedData,
+    },
+    GetFileChunk {
+        uuid: Uuid,
+        file_name: HashString,
+        chunk_index: usize,
     },
     GetSecret {
         uuid: Uuid,
@@ -15,7 +68,7 @@ pub enum Request {
     },
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Copy)]
 pub enum Lifetime {
     Days(i32),
     Hours(i32),
@@ -35,6 +88,39 @@ impl ToString for Lifetime {
 impl Default for Lifetime {
     fn default() -> Lifetime {
         Self::Days(7)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LifetimeParseError;
+
+impl fmt::Display for LifetimeParseError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Could not parse liftime")
+    }
+}
+
+impl From<ParseIntError> for LifetimeParseError {
+    fn from(_: ParseIntError) -> Self {
+        LifetimeParseError
+    }
+}
+
+impl FromStr for Lifetime {
+    type Err = LifetimeParseError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let unit = s.chars().last().ok_or(LifetimeParseError)?;
+
+        let number = s.trim_end_matches(unit);
+        let amount = i32::from_str(number)?;
+
+        match unit {
+            'd' => Ok(Lifetime::Days(amount)),
+            'h' => Ok(Lifetime::Hours(amount)),
+            'm' => Ok(Lifetime::Minutes(amount)),
+            _ => Err(LifetimeParseError),
+        }
     }
 }
 
@@ -74,32 +160,68 @@ impl Lifetime {
     }
 }
 
-#[derive(Serialize, Deserialize)]
-pub enum Response {
-    Error(String),
-    Secret(String),
-    Uuid(Uuid),
+#[derive(Serialize, Deserialize, Clone)]
+pub struct HashString(String);
+
+impl HashString {
+    pub fn new<T>(string: String) -> HashString
+    where
+        T: ?Sized + ToString,
+    {
+        HashString(format!("{:x}", md5::compute(string)))
+    }
 }
 
-#[derive(Serialize, Deserialize)]
+impl fmt::Display for HashString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)?;
+        Ok(())
+    }
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct FileChunk {
+    pub file_name: HashString,
+    pub index: usize,
+    pub chunk: EncryptedData,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub enum Response {
+    Error(String),
+    Secret((EncryptedData, Vec<(String, usize)>)),
+    FileChunk(FileChunk),
+    Uuid(Uuid),
+    Ok,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Config {
     pub error: String,
+    pub info: String,
     pub base_url: String,
     pub key_length: i32,
     pub max_length: i32,
     pub password_required: bool,
     pub lifetimes: Vec<Lifetime>,
+    pub max_files: i32,
+    pub max_files_size: u128,
+    pub chunk_size: usize,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Config {
             error: "".to_string(),
+            info: "".to_string(),
             base_url: "".to_string(),
             key_length: 16,
             max_length: 10000,
             password_required: false,
             lifetimes: vec![Lifetime::Days(7)],
+            max_files: 5,
+            max_files_size: byte_unit::n_mib_bytes!(25),
+            chunk_size: 123_456 * 4,
         }
     }
 }
