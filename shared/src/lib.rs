@@ -53,13 +53,13 @@ pub enum Request {
     },
     SendFileChunk {
         uuid: Uuid,
-        file_name: HashString,
+        file_name: String,
         chunk_index: usize,
         chunk: EncryptedData,
     },
     GetFileChunk {
         uuid: Uuid,
-        file_name: HashString,
+        file_name: String,
         chunk_index: usize,
     },
     GetSecret {
@@ -160,28 +160,28 @@ impl Lifetime {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone)]
-pub struct HashString(String);
+// #[derive(Serialize, Deserialize, Clone)]
+// pub struct HashString(String);
 
-impl HashString {
-    pub fn new<T>(string: String) -> HashString
-    where
-        T: ?Sized + ToString,
-    {
-        HashString(format!("{:x}", md5::compute(string)))
-    }
-}
+// impl HashString {
+//     pub fn new<T>(string: String) -> HashString
+//     where
+//         T: ?Sized + ToString,
+//     {
+//         HashString(format!("{:x}", md5::compute(string)))
+//     }
+// }
 
-impl fmt::Display for HashString {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)?;
-        Ok(())
-    }
-}
+// impl fmt::Display for HashString {
+//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+//         write!(f, "{}", self.0)?;
+//         Ok(())
+//     }
+// }
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct FileChunk {
-    pub file_name: HashString,
+    pub file_name: EncryptedData,
     pub index: usize,
     pub chunk: EncryptedData,
 }

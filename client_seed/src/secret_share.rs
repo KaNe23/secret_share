@@ -17,7 +17,7 @@ pub struct SecretShare {
     pub decrypt_key: Option<String>,
 
     pub drop_zone_active: bool,
-    pub files: HashMap<String, (u128, Vec<u8>)>,
+    pub files: HashMap<String, (String, u128, Vec<u8>)>,
     pub file_buffer: HashMap<String, Vec<Vec<u8>>>,
 
     pub cryption_in_progress: Option<(u128, u128)>,
@@ -28,6 +28,7 @@ pub struct SecretShare {
     pub password: String,
     pub lifetime: Lifetime,
     pub secret: Option<String>,
+    pub requests: Vec<(String, usize, Vec<u8>)>,
 }
 
 impl SecretShare {
@@ -55,10 +56,10 @@ impl SecretShare {
 
     fn generate_nonce(&self) -> String {
         thread_rng()
-        .sample_iter(Alphanumeric)
-        .take(24) // ChaCha20 needs key length of 24
-        .map(char::from)
-        .collect::<String>()
+            .sample_iter(Alphanumeric)
+            .take(24) // ChaCha20 needs key length of 24
+            .map(char::from)
+            .collect::<String>()
     }
 
     pub fn encrypt(&self, data: &[u8]) -> EncryptedData {
@@ -71,10 +72,11 @@ impl SecretShare {
             )
             .into(),
         );
-        let data = self.get_crypt()
+        let data = self
+            .get_crypt()
             .encrypt(&self.binary_nonce(nonce.clone()).into(), data)
             .expect("Could not encrypt");
-        EncryptedData{data, nonce}
+        EncryptedData { data, nonce }
     }
 
     pub fn to_binary(&self, key: String) -> Vec<u8> {
