@@ -2,26 +2,23 @@ mod secret_share;
 
 use std::collections::HashMap;
 use std::fmt::Display;
-use std::fs::{self, File};
-use std::io::Read;
 
 use byte_unit::Byte;
 use futures_util::StreamExt;
 use rand::distributions::Alphanumeric;
 use rand::{thread_rng, Rng};
 use secret_share::SecretShare;
-use seed::prelude::js_sys::ArrayBuffer;
+use seed::{a, nodes, window, JsFuture};
 use seed::{
     attrs, button, div, h1, h5, hr, input, label, option, p, pre, prelude::*, select, style,
     textarea, virtual_dom::Node, C, IF,
 };
-use seed::{nodes, window, JsFuture};
 use serde::{Deserialize, Serialize};
 use shared::{Config, EncryptedData};
 use std::str;
 use uuid::Uuid;
 use wasm_streams::ReadableStream;
-use web_sys::{console, Blob, Clipboard, DragEvent, FileList, HtmlElement};
+use web_sys::{Clipboard, DragEvent, FileList, HtmlInputElement};
 enum Msg {
     LifetimeChanged(String),
     SecretChanged(String),
@@ -212,8 +209,6 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
                 }
                 shared::Response::Secret(encrypted_secret) => {
                     let (secret, file_list) = (encrypted_secret.0, encrypted_secret.1);
-                    // console::log_1(&format!("{:?}", file_list).into());
-                    console::log_1(&"Decypt Secret".into());
                     model.secret =
                         Some(String::from_utf8(model.decrypt(secret)).expect("Invalid UTF8"));
                     if !file_list.is_empty() {
@@ -221,16 +216,10 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
                     }
                 }
                 shared::Response::FileChunk(file_chunk) => {
-                    console::log_1(&"Decypt Chunk".into());
                     let decrypted_chunk = model.decrypt(file_chunk.chunk);
 
-                    console::log_1(&"Decypt Filename".into());
-                    let file_name = String::from_utf8(model.decrypt(file_chunk.file_name))
+                    let file_name = String::from_utf8(model.decrypt(file_chunk.file_name.clone()))
                         .expect("Invalid UTF8");
-
-                    console::log_1(
-                        &format!("File: {} Chunk: {}", file_name, file_chunk.index).into(),
-                    );
 
                     let file = model
                         .file_buffer
@@ -244,6 +233,7 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
                         let cur = cur + 1;
                         model.cryption_in_progress = Some((cur, over));
                         if cur == over {
+                            model.cryption_in_progress = None;
                             orders.after_next_render(move |_| Msg::PushFiles);
                         }
                     }
@@ -306,33 +296,22 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
                 model.error = Some(format!("Max acc. file size of {} exceeded.", max_size));
                 return;
             }
-            // Read files (async).
+            // Read files
             for file in files {
                 orders.perform_cmd(async move {
-                    // let readable_stream = file.stream();
-                    // let content = file.stream().into_stream();
-                    let mut stream =
-                        ReadableStream::from_raw(file.stream().dyn_into().unwrap_throw())
-                            .into_stream();
+                    let mut stream = ReadableStream::from_raw(
+                        file.stream()
+                            .dyn_into()
+                            .expect("Could not cast file stream into readable stream"),
+                    )
+                    .into_stream();
                     let mut buffer: Vec<u8> = vec![];
                     while let Some(Ok(chunk)) = stream.next().await {
-                        console::log_1(&chunk);
-                        let data: js_sys::Uint8Array = chunk.dyn_into().unwrap();
-                        // let data: Vec<u8> = chunk.dyn_into().unwrap();
+                        let data: js_sys::Uint8Array = chunk
+                            .dyn_into()
+                            .expect("Could not cast JsValue into Uint8Array");
                         buffer.append(&mut data.to_vec());
                     }
-                    // for chunk in stream.chunks(123_456) {
-                    //     buffer.append(chunk);
-                    // }
-                    // let content =
-                    //     // Convert `promise` to `Future`.
-                    //     JsFuture::from(file.text())
-                    //         .await
-                    //         .expect("read file")
-                    //         .as_string()
-                    //         .expect("cast file text to String")
-                    //         .as_bytes()
-                    //         .to_vec();
                     Msg::FileRead((file.name(), file.size() as u128, buffer))
                 });
             }
@@ -351,13 +330,10 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
         // block the main thread for too long, nice side effect, I can easily display a fancy progress bar
         Msg::EncryptFiles => {
             if model.cryption_in_progress.is_none() {
-                let sum_data = model
-                    .files
-                    .iter()
-                    .fold(0, |acc, (_, (_, _, data))| acc + data.len());
-                console::log_1(&format!("Progres1: {}, {}", 0, sum_data).into());
-                let chunks = (sum_data / model.config.chunk_size) as f64;
-                model.cryption_in_progress = Some((0, chunks.ceil() as u128));
+                let chunks = model.files.iter().fold(0.0, |acc, (_, (_, _, data))| {
+                    acc + (data.len() as f64 / model.config.chunk_size as f64).ceil()
+                });
+                model.cryption_in_progress = Some((0, chunks as u128));
             };
 
             for (_index, (_file_name, (encrypted_file_name, _size, data))) in
@@ -392,13 +368,9 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
         }
         Msg::DecryptFiles(current_index, chunk, file_list) => {
             if model.cryption_in_progress.is_none() {
-                console::log_1(&format!("file_list: {:?}", file_list).into());
                 let amount = file_list.iter().fold(0, |acc, amount| acc + amount.1) as u128;
-                console::log_1(&format!("Progres4: {}, {}", chunk, amount).into());
                 model.cryption_in_progress = Some((0, amount));
                 for (encrypted_file_name, _chunks) in file_list.iter() {
-                    console::log_1(&"Decypt Filename".into());
-
                     let encrypted_data: EncryptedData = encrypted_file_name
                         .parse()
                         .expect("Could not parse file name");
@@ -422,65 +394,31 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
             orders.perform_cmd(async move {
                 Msg::Response(send_request(&request, "/get_file_chunk").await)
             });
-            // check for last file and chunk
-            console::log_1(
-                &format!(
-                    "{}, {}, {}, {}",
-                    current_index,
-                    file_list.len(),
-                    chunk,
-                    file_list[current_index].1
-                )
-                .into(),
-            );
-            console::log_1(
-                &dbg!(current_index < file_list.len() || chunk < file_list[current_index].1).into(),
-            );
-            // both start at 0
-            if current_index < file_list.len() - 1 || chunk < file_list[current_index].1 - 1 {
-                let (next_index, next_chunk) = if chunk < file_list[current_index].1 {
-                    (current_index, chunk + 1)
-                } else {
-                    (current_index + 1, 0)
-                };
 
+            let (next_index, next_chunk) = if chunk < file_list[current_index].1 - 1 {
+                (current_index, chunk + 1)
+            } else {
+                (current_index + 1, 0)
+            };
+
+            if next_index < file_list.len() {
                 orders.after_next_render(move |_| {
                     Msg::DecryptFiles(next_index, next_chunk, file_list)
                 });
             }
         }
         Msg::PushFiles => {
-            console::log_1(&"Am I done?".into());
-            // push files to the browser to download
             for (file_name, file_chunks) in model.file_buffer.iter_mut() {
-                // let array = js_sys::Array::new();
                 let mut all_chunks: Vec<u8> = vec![];
                 for chunk in file_chunks.iter_mut() {
-                    // let uint8arr = js_sys::Uint8Array::from(chunk.as_slice());
-                    // console::log_1(&format!("Data: {:?}", uint8arr.to_vec()).into());
-                    // array.push(&uint8arr.buffer());
-                    // let nom = chunk.clone();
-                    console::log_1(&format!("Data: {:?}", chunk).into());
                     all_chunks.append(chunk);
                 }
                 let file = gloo_file::File::new(file_name, all_chunks.as_slice());
-                // console::log_1(&format!("Size(len): {}", all_chunks.len()).into());
-                // let blob = gloo_file::Blob::new(all_chunks.as_slice());
-                // console::log_1(&format!("Size: {}", blob.size()).into());
-                // console::log_1(&format!("Slice: {:?}", blob.slice(0, 100)).into());
                 let blob = gloo_file::Blob::from(file);
-                // wow this feels so bad... must be this 21st century stuff
-                // let blob = Blob::new_with_u8_array_sequence(&array).unwrap();
                 let download_url = web_sys::Url::create_object_url_with_blob(&blob.into()).unwrap();
-                // console::log_1(&format!("{}", download_url).into());
-                let document = web_sys::window().unwrap().document().unwrap();
-                let a = document.create_element("a").unwrap();
-                let _ = a.set_attribute("href", &download_url);
-                let _ = a.set_attribute("download", file_name);
-                let _ = document.body().unwrap().append_child(&a);
-                let nom: HtmlElement = a.dyn_into().unwrap();
-                nom.click();
-                nom.remove();
+                model
+                    .blob_list
+                    .push((download_url.clone(), file_name.clone()));
             }
         }
     }
@@ -505,7 +443,8 @@ fn view(model: &SecretShare) -> Vec<Node<Msg>> {
             nodes![
                 h1!["View secret"],
                 h5!["This can only be done ONCE!"]
-                p![&model.error, &model.config.info],
+                p![&model.error],
+                p![&model.config.info],
                 textarea![C!["card w-100"], style![St::Resize => "none"],
                     attrs![At::Id => "secret", At::Name => "secret", At::Rows => "10", At::Cols => "50", At::Value => model.get_secret(), At::ReadOnly => true]
                 ]
@@ -540,7 +479,20 @@ fn view(model: &SecretShare) -> Vec<Node<Msg>> {
                             ]
                         ]
                     ]
-                )
+                ),
+                IF!(model.secret.is_some() && model.cryption_in_progress.is_none() && !model.blob_list.is_empty() => {
+                    nodes![
+                        p!["Save your files or they will be gone if you refresh/close this page: "],
+                        div![style![St::Float => "left"],
+                            model.blob_list.iter().map(|(blob_link, file_name)|
+                                a![attrs![At::Href => blob_link, At::Download => file_name],
+                                    style![St::Margin => "0.18em 0", St::Display => "block"],
+                                    file_name
+                                ]
+                            ).collect::<Vec<_>>()
+                        ]
+                    ]
+                }),
             ]
         ),
         // secret creation
@@ -551,7 +503,7 @@ fn view(model: &SecretShare) -> Vec<Node<Msg>> {
                     p![&model.error, " "], // invesible char to keep the element height the same if error is empty
                 ],
                 div![C!["row"],
-                    textarea![C!["col 6 card w-100"], style![St::Resize => "none", St::MarginBottom => em(-1)],
+                    textarea![C!["col 6 card w-100"], style![St::Resize => "none", St::MarginBottom => em(-2)],
                         attrs![At::MaxLength => model.config.max_length, At::Id => "secret", At::Name => "secret",  At::Rows => "10",  At::Cols => "50"],
                         input_ev(Ev::Input, Msg::SecretChanged)
                     ],
@@ -568,6 +520,7 @@ fn view(model: &SecretShare) -> Vec<Node<Msg>> {
                             let drag_event = event.dyn_into::<DragEvent>().expect("cannot cast given event into DragEvent");
                             stop_and_prevent!(drag_event);
                             if let Some(data_transfer) = drag_event.data_transfer() {
+                                data_transfer.set_effect_allowed("all");
                                 data_transfer.set_drop_effect("copy");
                             }
                             Msg::DragOver
@@ -582,6 +535,17 @@ fn view(model: &SecretShare) -> Vec<Node<Msg>> {
                             let file_list = drag_event.data_transfer().expect("No data transfer").files().expect("No files");
                             Msg::Drop(file_list)
                         }),
+                        IF!(model.files.is_empty() =>
+                            input![
+                                attrs![At::Type => "file", At::Multiple => "true"],
+                                ev(Ev::Change, |event| {
+                                    stop_and_prevent!(event);
+                                    let element: HtmlInputElement = event.target().expect("no target found").dyn_into().expect("Could not cast element into HTMLInputElement");
+                                    let file_list = element.files().expect("No files found");
+                                    Msg::Drop(file_list)
+                                }),
+                            ]
+                        ),
                         div![style![St::Float => "left"],
                             model.file_names().iter().map(|(name, abbr_name)|
                                 div![style![St::Margin => "0.18em 0"],
@@ -607,8 +571,8 @@ fn view(model: &SecretShare) -> Vec<Node<Msg>> {
                     ],
                     IF!(!model.files.is_empty() =>
                         p![C!["3 col"], style![St::TextAlign => St::Right, St::Color => "#aaa"],
-                            {let curr_size = Byte::from_bytes(model.files.iter().fold(0, |acc, (_, (_, x, _))| acc + *x as u128));
-                            let max_size = Byte::from_bytes(model.config.max_files_size as u128).get_appropriate_unit(true);
+                            {let curr_size = Byte::from_bytes(model.files.iter().fold(0, |acc, (_, (_, x, _))| acc + *x ));
+                            let max_size = Byte::from_bytes(model.config.max_files_size).get_appropriate_unit(true);
                             format!("Max Size: {} / {}", curr_size.get_appropriate_unit(true), max_size)}
                         ]
                     )
@@ -624,7 +588,9 @@ fn view(model: &SecretShare) -> Vec<Node<Msg>> {
                                 pre![model.url()]
                             ],
                             div![C!["3 col"],
-                                button![C!["card btn"], style![St::VerticalAlign => St::from("text-bottom"), St::Width => percent(100)],
+                                button![C!["card btn"], style![
+                                    // St::VerticalAlign => St::from("text-bottom"),
+                                    St::Width => percent(100)],
                                     input_ev(Ev::Click, |_| Msg::CopyUrl),
                                     model.clipboard_button_text.clone()
                                 ]

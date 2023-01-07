@@ -14,12 +14,8 @@ use askama::Template;
 use byte_unit::Byte;
 use lazy_static::lazy_static;
 use redis::{aio::Connection, AsyncCommands, Client, RedisResult};
-use shared::{Config, EncryptedData, FileChunk, Lifetime, Request, Response};
-use std::{
-    fs::{self, File},
-    io::{Read, Write},
-    str::FromStr,
-};
+use shared::{Config, FileChunk, Lifetime, Request, Response};
+use std::str::FromStr;
 use uuid::Uuid;
 
 use crate::entry::Entry;
@@ -73,15 +69,15 @@ lazy_static! {
 
 }
 
-// #[cfg(all(feature = "frontend-yew", feature = "frontend-seed"))]
-// compile_error!(
-//     "feature \"frontend-yew\" and feature \"frontend-seed\" cannot be enabled at the same time"
-// );
+#[cfg(all(feature = "frontend-yew", feature = "frontend-seed"))]
+compile_error!(
+    "feature \"frontend-yew\" and feature \"frontend-seed\" cannot be enabled at the same time"
+);
 
-// #[cfg(not(any(feature = "frontend-yew", feature = "frontend-seed")))]
-// compile_error!(
-//     "Either feature \"frontend-yew\" or \"frontend-seed\" must be enabled for this crate."
-// );
+#[cfg(not(any(feature = "frontend-yew", feature = "frontend-seed")))]
+compile_error!(
+    "Either feature \"frontend-yew\" or \"frontend-seed\" must be enabled for this crate."
+);
 
 cfg_if::cfg_if! {
     if #[cfg(feature = "frontend-yew")] {
@@ -215,7 +211,6 @@ async fn get_secret(params: web::Json<Request>) -> impl Responder {
     let mut file_list = Vec::new();
 
     for (file_name, _) in entry.file_list.iter() {
-        // println!("key: {}", format!("{}-{}-*", key, file_name));
         let chunks: Vec<String> = match store.keys(format!("{}-{}-*", key, file_name)).await {
             Ok(list) => list,
             Err(e) => {
@@ -241,14 +236,6 @@ async fn file_chunk(params: web::Json<Request>) -> impl Responder {
     } else {
         return HttpResponse::BadRequest().finish();
     };
-
-    // println!(
-    //     "Uuid: {}, File: {:x?}, Index: {}, Data: {}",
-    //     uuid,
-    //     file_name,
-    //     chunk_index,
-    //     chunk.data.len()
-    // );
 
     if let Ok(mut store) = get_storage().await {
         let u_file_name = format!("{}-{}-{}", uuid, file_name, chunk_index);
@@ -373,52 +360,6 @@ async fn key_exists(key: Uuid) -> Result<bool, Error> {
     Ok(store.exists(&key.to_string()).await?)
 }
 
-use rand::distributions::Alphanumeric;
-use rand::thread_rng;
-use rand::Rng;
-
-use chacha20poly1305::aead::Aead;
-use chacha20poly1305::*;
-
-fn generate_nonce() -> String {
-    rand::thread_rng()
-        .sample_iter(Alphanumeric)
-        .take(24) // ChaCha20 needs key length of 24
-        .map(char::from)
-        .collect::<String>()
-}
-
-pub fn get_crypt(encrypt_key: String) -> XChaCha20Poly1305 {
-    XChaCha20Poly1305::new((&binary_encrypt_key(encrypt_key)).into())
-}
-
-pub fn encrypt(data: &[u8], encrypt_key: String) -> EncryptedData {
-    let nonce = generate_nonce();
-
-    let data = get_crypt(encrypt_key)
-        .encrypt(&binary_nonce(nonce.clone()).into(), data)
-        .expect("Could not encrypt");
-    EncryptedData { data, nonce }
-}
-
-pub fn decrypt(data: EncryptedData, encrypt_key: String) -> Vec<u8> {
-    get_crypt(encrypt_key)
-        .decrypt(&binary_nonce(data.nonce).into(), data.data.as_ref())
-        .expect("Could not decrypt")
-}
-
-pub fn binary_nonce(nonce: String) -> [u8; 24] {
-    to_binary(nonce).try_into().expect("Wrong length")
-}
-
-pub fn to_binary(key: String) -> Vec<u8> {
-    key.chars().map(|c| c as u8).collect::<Vec<_>>()
-}
-
-pub fn binary_encrypt_key(encrypt_key: String) -> [u8; 32] {
-    to_binary(encrypt_key).try_into().expect("Wrong length")
-}
-
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     std::env::set_var("RUST_LOG", "actix_web=info");
@@ -427,42 +368,6 @@ async fn main() -> std::io::Result<()> {
     // for (key, var) in std::env::vars(){
     //     println!("key: {} val: {}", key, var);
     // }
-
-    // let crypt = get_crypt();
-
-    // let encrypt_key: std::string::String = (&mut thread_rng())
-    //     .sample_iter(Alphanumeric)
-    //     .take(32) // ChaCha20 needs key length of 32
-    //     .map(char::from)
-    //     .collect::<String>();
-
-    // let filename = "/home/germain/git/secret_share/Bettv13.avi";
-    // let mut f = File::open(filename).expect("no file found");
-    // let metadata = fs::metadata(filename).expect("unable to read metadata");
-    // let mut buffer = vec![0; metadata.len() as usize];
-    // f.read_exact(&mut buffer).expect("buffer overflow");
-
-    // let mut crypted = vec![];
-
-    // for (i, chunk) in buffer.chunks(123_456).enumerate() {
-    //     if i == 0 {
-    //         println!("Chunk: {:?}", chunk);
-    //     }
-    //     crypted.push(encrypt(chunk, encrypt_key.clone()));
-    // }
-
-    // let mut new_buffer = vec![];
-
-    // for crypted_chunk in crypted {
-    //     new_buffer.append(&mut decrypt(crypted_chunk, encrypt_key.clone()));
-    // }
-
-    // let filename_new = "/home/germain/git/secret_share/Bettv13_new.avi";
-
-    // let mut f = File::create(filename_new).expect("no file found");
-
-    // f.write_all(&new_buffer);
-    // f.sync_all();
 
     let adress = format!("0.0.0.0:{}", *PORT);
 

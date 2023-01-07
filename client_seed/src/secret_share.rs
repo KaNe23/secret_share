@@ -8,7 +8,6 @@ use shared::EncryptedData;
 use shared::Lifetime;
 use std::collections::HashMap;
 use uuid::Uuid;
-use web_sys::console;
 
 #[derive(Default)]
 pub struct SecretShare {
@@ -29,6 +28,7 @@ pub struct SecretShare {
     pub lifetime: Lifetime,
     pub secret: Option<String>,
     pub requests: Vec<(String, usize, Vec<u8>)>,
+    pub blob_list: Vec<(String, String)>,
 }
 
 impl SecretShare {
@@ -42,13 +42,6 @@ impl SecretShare {
     }
 
     pub fn decrypt(&self, data: EncryptedData) -> Vec<u8> {
-        console::log_1(
-            &format!(
-                "Decrypt with key: {:?} nonce: {:?}",
-                self.decrypt_key, data.nonce
-            )
-            .into(),
-        );
         self.get_crypt()
             .decrypt(&self.binary_nonce(data.nonce).into(), data.data.as_ref())
             .expect("Could not decrypt")
@@ -64,14 +57,6 @@ impl SecretShare {
 
     pub fn encrypt(&self, data: &[u8]) -> EncryptedData {
         let nonce = self.generate_nonce();
-
-        console::log_1(
-            &format!(
-                "Encrypt with key: {:?} nonce: {:?}",
-                self.encrypt_key, nonce
-            )
-            .into(),
-        );
         let data = self
             .get_crypt()
             .encrypt(&self.binary_nonce(nonce.clone()).into(), data)
@@ -107,8 +92,8 @@ impl SecretShare {
 
     pub fn file_names(&self) -> Vec<(String, String)> {
         self.files
-            .iter()
-            .map(|(file_name, _)| {
+            .keys()
+            .map(|file_name| {
                 if file_name.len() > 35 {
                     let abbrev_name = file_name[0..35].to_string();
                     let ext = file_name[(file_name.len() - 3)..].to_string();

@@ -24,7 +24,10 @@ web-sys = { version = "0.3.60", features = [
     "Document",
     "Element",
     "Blob",
-    "ReadableStream"
+    "ReadableStream",
+    "File",
+    "FileList",
+    "DataTransfer"
 ] }
 wasm-bindgen-futures = "0.4.33"
 byte-unit = "4.0.14"
