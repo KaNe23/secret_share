@@ -1,13 +1,14 @@
-use chacha20poly1305::aead::Aead;
-use chacha20poly1305::*;
-use rand::distr::Alphanumeric;
-use rand::rng;
-use rand::RngExt;
+use js_sys::{Array, Uint8Array};
 use shared::Config;
 use shared::EncryptedData;
 use shared::Lifetime;
 use std::collections::HashMap;
 use uuid::Uuid;
+use wasm_bindgen::{JsCast, JsValue};
+use wasm_bindgen_futures::JsFuture;
+use web_sys::{AesGcmParams, Crypto, CryptoKey};
+
+const IV_LEN: usize = 12;
 
 #[derive(Default)]
 pub struct SecretShare {
@@ -16,8 +17,10 @@ pub struct SecretShare {
     pub decrypt_key: Option<String>,
 
     pub drop_zone_active: bool,
+    // plain file name -> (encrypted file name, size, content)
     pub files: HashMap<String, (String, u64, Vec<u8>)>,
-    pub file_buffer: HashMap<String, Vec<Vec<u8>>>,
+    // pending transfers: (encrypted file name, plaintext bytes — empty for downloads)
+    pub requests: Vec<(String, Vec<u8>)>,
 
     pub cryption_in_progress: Option<(u64, u64)>,
 
@@ -27,7 +30,6 @@ pub struct SecretShare {
     pub password: String,
     pub lifetime: Lifetime,
     pub secret: Option<String>,
-    pub requests: Vec<(String, usize, Vec<u8>)>,
     pub blob_list: Vec<(String, String)>,
 }
 
@@ -41,62 +43,27 @@ impl SecretShare {
         )
     }
 
-    pub fn decrypt(&self, data: EncryptedData) -> Vec<u8> {
-        self.get_crypt()
-            .decrypt(&self.binary_nonce(data.nonce).into(), data.data.as_ref())
-            .expect("Could not decrypt")
-    }
-
-    fn generate_nonce(&self) -> String {
-        rng()
-            .sample_iter(Alphanumeric)
-            .take(24) // ChaCha20 needs key length of 24
-            .map(char::from)
-            .collect::<String>()
-    }
-
-    pub fn encrypt(&self, data: &[u8]) -> EncryptedData {
-        let nonce = self.generate_nonce();
-        let data = self
-            .get_crypt()
-            .encrypt(&self.binary_nonce(nonce.clone()).into(), data)
-            .expect("Could not encrypt");
-        EncryptedData { data, nonce }
-    }
-
-    pub fn to_binary(&self, key: String) -> Vec<u8> {
-        key.chars().map(|c| c as u8).collect::<Vec<_>>()
-    }
-
-    pub fn binary_encrypt_key(&self) -> [u8; 32] {
-        let key = self.encrypt_key.clone().expect("Not set");
-        self.to_binary(key).try_into().expect("Wrong length")
-    }
-
-    pub fn binary_decrypt_key(&self) -> [u8; 32] {
-        let key = self.decrypt_key.clone().expect("Not set");
-        self.to_binary(key).try_into().expect("Wrong length")
-    }
-
-    pub fn binary_nonce(&self, nonce: String) -> [u8; 24] {
-        self.to_binary(nonce).try_into().expect("Wrong length")
+    pub fn key(&self) -> String {
+        self.decrypt_key
+            .clone()
+            .or_else(|| self.encrypt_key.clone())
+            .expect("No en/decrypt key set")
     }
 
     pub fn get_secret(&self) -> String {
-        if let Some(secret) = &self.secret {
-            secret.clone()
-        } else {
-            "".to_string()
-        }
+        self.secret.clone().unwrap_or_default()
     }
 
     pub fn file_names(&self) -> Vec<(String, String)> {
         self.files
             .keys()
             .map(|file_name| {
-                if file_name.len() > 35 {
-                    let abbrev_name = file_name[0..35].to_string();
-                    let ext = file_name[(file_name.len() - 3)..].to_string();
+                if file_name.chars().count() > 35 {
+                    let abbrev_name: String = file_name.chars().take(35).collect();
+                    let ext: String = file_name
+                        .chars()
+                        .skip(file_name.chars().count() - 3)
+                        .collect();
                     (file_name.clone(), format!("{}…{}", abbrev_name, ext))
                 } else {
                     (file_name.clone(), file_name.clone())
@@ -104,14 +71,91 @@ impl SecretShare {
             })
             .collect()
     }
+}
 
-    pub fn get_crypt(&self) -> XChaCha20Poly1305 {
-        if self.decrypt_key.is_some() {
-            XChaCha20Poly1305::new((&self.binary_decrypt_key()).into())
-        } else if self.encrypt_key.is_some() {
-            XChaCha20Poly1305::new((&self.binary_encrypt_key()).into())
-        } else {
-            panic!("No en/decrypt key set")
-        }
+// Crypto: AES-256-GCM via the browser's SubtleCrypto. Runs off the main
+// thread natively, so whole files are encrypted in a single call — no
+// chunking, no workers.
+
+fn crypto() -> Crypto {
+    web_sys::window()
+        .expect("no window")
+        .crypto()
+        .expect("WebCrypto unavailable")
+}
+
+fn err_str(e: JsValue) -> String {
+    format!("Crypto error: {:?}", e)
+}
+
+async fn import_key(key: &str) -> Result<CryptoKey, String> {
+    let usages = Array::of2(&"encrypt".into(), &"decrypt".into());
+    let key_data = Uint8Array::from(key.as_bytes());
+    let promise = crypto()
+        .subtle()
+        .import_key_with_str("raw", &key_data, "AES-GCM", false, &usages)
+        .map_err(err_str)?;
+    Ok(JsFuture::from(promise)
+        .await
+        .map_err(err_str)?
+        .unchecked_into())
+}
+
+async fn encrypt_raw(key: &str, plaintext: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
+    let key = import_key(key).await?;
+    let mut iv = vec![0u8; IV_LEN];
+    crypto()
+        .get_random_values_with_u8_array(&mut iv)
+        .map_err(err_str)?;
+    let params = AesGcmParams::new("AES-GCM", &Uint8Array::from(iv.as_slice()));
+    let mut data = plaintext.to_vec();
+    let promise = crypto()
+        .subtle()
+        .encrypt_with_object_and_u8_array(&params, &key, &mut data)
+        .map_err(err_str)?;
+    let buffer = JsFuture::from(promise).await.map_err(err_str)?;
+    Ok((Uint8Array::new(&buffer).to_vec(), iv))
+}
+
+async fn decrypt_raw(key: &str, ciphertext: &[u8], iv: &[u8]) -> Result<Vec<u8>, String> {
+    let key = import_key(key).await?;
+    let params = AesGcmParams::new("AES-GCM", &Uint8Array::from(iv));
+    let mut data = ciphertext.to_vec();
+    let promise = crypto()
+        .subtle()
+        .decrypt_with_object_and_u8_array(&params, &key, &mut data)
+        .map_err(|_| "Could not decrypt".to_string())?;
+    let buffer = JsFuture::from(promise)
+        .await
+        .map_err(|_| "Could not decrypt".to_string())?;
+    Ok(Uint8Array::new(&buffer).to_vec())
+}
+
+/// Encrypt into the JSON wire format (secret text, file names).
+pub async fn encrypt_data(key: &str, plaintext: &[u8]) -> Result<EncryptedData, String> {
+    let (data, iv) = encrypt_raw(key, plaintext).await?;
+    Ok(EncryptedData {
+        data,
+        nonce: hex::encode(iv),
+    })
+}
+
+pub async fn decrypt_data(key: &str, encrypted: &EncryptedData) -> Result<Vec<u8>, String> {
+    let iv = hex::decode(&encrypted.nonce).map_err(|_| "Invalid nonce".to_string())?;
+    decrypt_raw(key, &encrypted.data, &iv).await
+}
+
+/// Encrypt into a self-contained blob (files): IV followed by ciphertext.
+pub async fn encrypt_blob(key: &str, plaintext: &[u8]) -> Result<Vec<u8>, String> {
+    let (data, mut blob) = encrypt_raw(key, plaintext).await?;
+    blob.extend(data);
+    Ok(blob)
+}
+
+pub async fn decrypt_blob(key: &str, blob: &[u8]) -> Result<Vec<u8>, String> {
+    if blob.len() < IV_LEN {
+        return Err("File too short".to_string());
     }
+    let (iv, ciphertext) = blob.split_at(IV_LEN);
+    decrypt_raw(key, ciphertext, iv).await
 }

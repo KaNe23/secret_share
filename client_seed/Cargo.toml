@@ -16,15 +16,21 @@ askama = "0.16"
 uuid = { version = "1.1.2", features = ["serde", "v4", "js"] }
 rand = "0.10"
 getrandom = { version = "0.4", features = ["wasm_js"] }
+hex = "0.4"
+js-sys = "0.3"
+wasm-bindgen = "0.2"
 web-sys = { version = "0.3.60", features = [
+    "AesGcmParams",
     "Clipboard",
+    "Crypto",
+    "CryptoKey",
+    "SubtleCrypto",
     "Navigator",
     "Window",
     "Url",
     "Document",
     "Element",
     "Blob",
-    "ReadableStream",
     "File",
     "FileList",
     "DataTransfer"
@@ -32,9 +38,6 @@ web-sys = { version = "0.3.60", features = [
 wasm-bindgen-futures = "0.4.33"
 byte-unit = "5"
 gloo-net = "0.7"
-chacha20poly1305 = "0.11"
-gloo-file = "0.4"
-wasm-streams = "0.6"
-futures-util = "0.3.25"
+gloo-file = { version = "0.4", features = ["futures"] }
 
 shared = { path = "../shared" }

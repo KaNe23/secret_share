@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::fmt::Display;
 
 use byte_unit::Byte;
-use futures_util::StreamExt;
+use js_sys::Uint8Array;
 use rand::distr::Alphanumeric;
 use rand::{rng, RngExt};
 use secret_share::SecretShare;
@@ -17,27 +17,27 @@ use serde::{Deserialize, Serialize};
 use shared::{Config, EncryptedData};
 use std::str;
 use uuid::Uuid;
-use wasm_streams::ReadableStream;
 use web_sys::{Clipboard, DragEvent, FileList, HtmlInputElement};
+
 enum Msg {
     LifetimeChanged(String),
     SecretChanged(String),
     PasswordChanged(String),
     NewSecret,
-    Response(Result<shared::Response, gloo_net::Error>),
+    Response(Result<shared::Response, String>),
     GetSecret,
+    SecretDecrypted(Result<String, String>, Vec<String>),
     CopyUrl,
     CopyResult(Result<JsValue, JsValue>),
     DragEnter,
     DragOver,
     DragLeave,
     Drop(FileList),
-    FileRead((String, u64, Vec<u8>)),
+    FileRead(Result<(String, String, u64, Vec<u8>), String>),
     RemoveFile(String),
-    EncryptFiles,
-    DecryptFiles(usize, usize, Vec<(String, usize)>),
-    PushFiles,
-    SendChunks,
+    TransferNext,
+    Uploaded(Result<(), String>),
+    Downloaded(Result<(String, Vec<u8>), String>),
 }
 
 enum SecretShareError {
@@ -115,7 +115,7 @@ fn init(_: Url, _: &mut impl Orders<Msg>) -> SecretShare {
                 encrypt_key = Some(
                     (&mut rng())
                         .sample_iter(Alphanumeric)
-                        .take(32) // ChaCha20 needs key length of 32
+                        .take(32) // AES-256 needs a 32 byte key
                         .map(char::from)
                         .collect::<String>(),
                 );
@@ -134,22 +134,67 @@ fn init(_: Url, _: &mut impl Orders<Msg>) -> SecretShare {
     }
 }
 
-async fn send_request<V, T>(variables: &V, url: &str) -> Result<T, gloo_net::Error>
+async fn send_request<V, T>(variables: &V, url: &str) -> Result<T, String>
 where
     V: Serialize,
     T: for<'de> Deserialize<'de> + 'static,
 {
     let response = gloo_net::http::Request::post(url)
-        .json(variables)?
+        .json(variables)
+        .map_err(|e| e.to_string())?
         .send()
-        .await?;
+        .await
+        .map_err(|e| e.to_string())?;
     if !response.ok() {
-        return Err(gloo_net::Error::GlooError(format!(
-            "HTTP status {}",
-            response.status()
-        )));
+        return Err(format!("HTTP status {}", response.status()));
     }
-    response.json().await
+    response.json().await.map_err(|e| e.to_string())
+}
+
+async fn upload_file(
+    key: String,
+    uuid: Uuid,
+    encrypted_name: String,
+    bytes: Vec<u8>,
+) -> Result<(), String> {
+    let blob = secret_share::encrypt_blob(&key, &bytes).await?;
+    let body = Uint8Array::from(blob.as_slice());
+    let response = gloo_net::http::Request::post(&format!("/file/{}/{}", uuid, encrypted_name))
+        .body(body)
+        .map_err(|e| e.to_string())?
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if response.ok() {
+        Ok(())
+    } else {
+        Err(format!("Upload failed: HTTP {}", response.status()))
+    }
+}
+
+async fn download_file(
+    key: String,
+    uuid: Uuid,
+    encrypted_name: String,
+) -> Result<(String, Vec<u8>), String> {
+    let response =
+        gloo_net::http::Request::post(&format!("/get_file/{}/{}", uuid, encrypted_name))
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+    if !response.ok() {
+        return Err(format!("Download failed: HTTP {}", response.status()));
+    }
+    let blob = response.binary().await.map_err(|e| e.to_string())?;
+    let bytes = secret_share::decrypt_blob(&key, &blob).await?;
+
+    let encrypted: EncryptedData = encrypted_name
+        .parse()
+        .map_err(|_| "Invalid file name".to_string())?;
+    let name_bytes = secret_share::decrypt_data(&key, &encrypted).await?;
+    let file_name = String::from_utf8(name_bytes).map_err(|e| e.to_string())?;
+
+    Ok((file_name, bytes))
 }
 
 fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
@@ -161,7 +206,8 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
         Msg::SecretChanged(secret) => model.secret = Some(secret),
         Msg::PasswordChanged(password) => model.password = password,
         Msg::NewSecret => {
-            let secret = model.encrypt(model.get_secret().as_ref());
+            let key = model.key();
+            let text = model.get_secret();
 
             let password = if model.password.is_empty() {
                 None
@@ -169,24 +215,25 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
                 Some(model.password.clone())
             };
 
-            let file_list = model.files.iter().fold(
-                HashMap::new(),
-                |mut list, (_, (encrypted_file_name, size, _))| {
-                    list.insert(encrypted_file_name.clone(), *size);
-                    list
-                },
-            );
-
-            let request = shared::Request::CreateSecret {
-                secret,
-                password,
-                lifetime: model.lifetime,
-                file_list,
-            };
+            let lifetime = model.lifetime;
+            let file_list: HashMap<String, u64> = model
+                .files
+                .values()
+                .map(|(encrypted_file_name, size, _)| (encrypted_file_name.clone(), *size))
+                .collect();
 
             orders.perform_cmd(async move {
-                let response = send_request(&request, "/new_secret").await;
-                Msg::Response(response)
+                let secret = match secret_share::encrypt_data(&key, text.as_bytes()).await {
+                    Ok(secret) => secret,
+                    Err(e) => return Msg::Response(Err(e)),
+                };
+                let request = shared::Request::CreateSecret {
+                    secret,
+                    password,
+                    lifetime,
+                    file_list,
+                };
+                Msg::Response(send_request(&request, "/new_secret").await)
             });
         }
         Msg::GetSecret => {
@@ -204,52 +251,91 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
                     model.uuid = Some(uuid);
 
                     if !model.files.is_empty() {
-                        // encrypt and send files after we created the secret
-                        orders.send_msg(Msg::EncryptFiles);
+                        // encrypt and upload the files now that the secret exists
+                        model.requests = model
+                            .files
+                            .values()
+                            .map(|(encrypted_name, _, bytes)| {
+                                (encrypted_name.clone(), bytes.clone())
+                            })
+                            .collect();
+                        model.cryption_in_progress = Some((0, model.requests.len() as u64));
+                        orders.send_msg(Msg::TransferNext);
                     }
                 }
-                shared::Response::Secret(encrypted_secret) => {
-                    let (secret, file_list) = (encrypted_secret.0, encrypted_secret.1);
-                    model.secret =
-                        Some(String::from_utf8(model.decrypt(secret)).expect("Invalid UTF8"));
-                    if !file_list.is_empty() {
-                        orders.send_msg(Msg::DecryptFiles(0, 0, file_list));
-                    }
+                shared::Response::Secret((secret, file_list)) => {
+                    let key = model.key();
+                    orders.perform_cmd(async move {
+                        let text = match secret_share::decrypt_data(&key, &secret).await {
+                            Ok(bytes) => String::from_utf8(bytes).map_err(|e| e.to_string()),
+                            Err(e) => Err(e),
+                        };
+                        Msg::SecretDecrypted(text, file_list)
+                    });
                 }
-                shared::Response::FileChunk(file_chunk) => {
-                    let decrypted_chunk = model.decrypt(file_chunk.chunk);
-
-                    let file_name = String::from_utf8(model.decrypt(file_chunk.file_name.clone()))
-                        .expect("Invalid UTF8");
-
-                    let file = model
-                        .file_buffer
-                        .get_mut(&file_name)
-                        .expect("Could not find element");
-
-                    // files are created with predefined chunk capacity
-                    file[file_chunk.index] = decrypted_chunk;
-
-                    if let Some((cur, over)) = model.cryption_in_progress {
-                        let cur = cur + 1;
-                        model.cryption_in_progress = Some((cur, over));
-                        if cur == over {
-                            model.cryption_in_progress = None;
-                            orders.after_next_render(move |_| Msg::PushFiles);
-                        }
-                    }
-                }
-                shared::Response::Ok => {
-                    if let Some((cur, des)) = model.cryption_in_progress {
-                        if cur < des {
-                            model.cryption_in_progress = Some((cur + 1, des));
-                        }
-                    }
-                }
+                shared::Response::Ok => {}
                 shared::Response::Error(e) => model.error = Some(e),
             },
             Err(e) => {
-                model.error = Some(format!("{:?}", e));
+                model.error = Some(e);
+            }
+        },
+        Msg::SecretDecrypted(result, file_list) => match result {
+            Ok(text) => {
+                model.secret = Some(text);
+                if !file_list.is_empty() {
+                    model.requests = file_list.into_iter().map(|name| (name, vec![])).collect();
+                    model.cryption_in_progress = Some((0, model.requests.len() as u64));
+                    orders.send_msg(Msg::TransferNext);
+                }
+            }
+            Err(e) => model.error = Some(e),
+        },
+        Msg::TransferNext => {
+            if let Some((encrypted_name, bytes)) = model.requests.pop() {
+                let key = model.key();
+                let uuid = model.uuid.expect("no uuid set");
+                if model.decrypt_key.is_some() {
+                    orders.perform_cmd(async move {
+                        Msg::Downloaded(download_file(key, uuid, encrypted_name).await)
+                    });
+                } else {
+                    orders.perform_cmd(async move {
+                        Msg::Uploaded(upload_file(key, uuid, encrypted_name, bytes).await)
+                    });
+                }
+            } else {
+                model.cryption_in_progress = None;
+            }
+        }
+        Msg::Uploaded(result) => match result {
+            Ok(()) => {
+                if let Some((cur, over)) = model.cryption_in_progress {
+                    model.cryption_in_progress = Some((cur + 1, over));
+                }
+                orders.send_msg(Msg::TransferNext);
+            }
+            Err(e) => {
+                model.cryption_in_progress = None;
+                model.error = Some(e);
+            }
+        },
+        Msg::Downloaded(result) => match result {
+            Ok((file_name, bytes)) => {
+                let file = gloo_file::File::new(&file_name, bytes.as_slice());
+                let blob = gloo_file::Blob::from(file);
+                let download_url =
+                    web_sys::Url::create_object_url_with_blob(&blob.into()).unwrap();
+                model.blob_list.push((download_url, file_name));
+
+                if let Some((cur, over)) = model.cryption_in_progress {
+                    model.cryption_in_progress = Some((cur + 1, over));
+                }
+                orders.send_msg(Msg::TransferNext);
+            }
+            Err(e) => {
+                model.cryption_in_progress = None;
+                model.error = Some(e);
             }
         },
         Msg::CopyUrl => {
@@ -294,130 +380,39 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
                 model.error = Some(format!("Max acc. file size of {} exceeded.", max_size));
                 return;
             }
-            // Read files
+            // Read files and encrypt their names; content is encrypted at upload time
             for file in files {
+                let key = model.key();
                 orders.perform_cmd(async move {
-                    let mut stream = ReadableStream::from_raw(
-                        file.stream()
-                            .dyn_into()
-                            .expect("Could not cast file stream into readable stream"),
-                    )
-                    .into_stream();
-                    let mut buffer: Vec<u8> = vec![];
-                    while let Some(Ok(chunk)) = stream.next().await {
-                        let data: js_sys::Uint8Array = chunk
-                            .dyn_into()
-                            .expect("Could not cast JsValue into Uint8Array");
-                        buffer.append(&mut data.to_vec());
+                    let name = file.name();
+                    let size = file.size() as u64;
+                    let result = async {
+                        let bytes = gloo_file::futures::read_as_bytes(&file.into())
+                            .await
+                            .map_err(|e| e.to_string())?;
+                        let encrypted_name =
+                            secret_share::encrypt_data(&key, name.as_bytes()).await?;
+                        Ok((name, encrypted_name.to_string(), size, bytes))
                     }
-                    Msg::FileRead((file.name(), file.size() as u64, buffer))
+                    .await;
+                    Msg::FileRead(result)
                 });
             }
         }
-        Msg::FileRead((file_name, size, content)) => {
-            let encrypted_file_name = model.encrypt(file_name.as_ref()).to_string();
-            model
-                .files
-                .insert(file_name, (encrypted_file_name, size, content));
-            model.drop_zone_active = false;
-        }
+        Msg::FileRead(result) => match result {
+            Ok((file_name, encrypted_file_name, size, content)) => {
+                model
+                    .files
+                    .insert(file_name, (encrypted_file_name, size, content));
+                model.drop_zone_active = false;
+            }
+            Err(e) => {
+                model.drop_zone_active = false;
+                model.error = Some(e);
+            }
+        },
         Msg::RemoveFile(file_name) => {
             model.files.remove(&file_name);
-        }
-        // Web Workers are a shit show right now, so I encrypt the files in little chunks to not
-        // block the main thread for too long, nice side effect, I can easily display a fancy progress bar
-        Msg::EncryptFiles => {
-            if model.cryption_in_progress.is_none() {
-                let chunks = model.files.iter().fold(0.0, |acc, (_, (_, _, data))| {
-                    acc + (data.len() as f64 / model.config.chunk_size as f64).ceil()
-                });
-                model.cryption_in_progress = Some((0, chunks as u64));
-            };
-
-            for (_index, (_file_name, (encrypted_file_name, _size, data))) in
-                model.files.iter().enumerate()
-            {
-                for (index, chunk) in data.chunks(model.config.chunk_size).enumerate() {
-                    model
-                        .requests
-                        .push((encrypted_file_name.clone(), index, chunk.to_vec()));
-                }
-            }
-            orders.send_msg(Msg::SendChunks);
-        }
-        Msg::SendChunks => {
-            if let Some((file_name, chunk_index, chunk)) = model.requests.pop() {
-                let uuid = model.uuid.expect("no Uuid");
-                let encrypted_chunk = model.encrypt(&chunk);
-                let request = shared::Request::SendFileChunk {
-                    uuid,
-                    file_name,
-                    chunk_index,
-                    chunk: encrypted_chunk,
-                };
-                orders.perform_cmd(async move {
-                    Msg::Response(send_request(&request, "/file_chunk").await)
-                });
-                orders.render();
-                orders.after_next_render(move |_| Msg::SendChunks);
-            } else {
-                model.cryption_in_progress = None;
-            }
-        }
-        Msg::DecryptFiles(current_index, chunk, file_list) => {
-            if model.cryption_in_progress.is_none() {
-                let amount = file_list.iter().fold(0, |acc, amount| acc + amount.1) as u64;
-                model.cryption_in_progress = Some((0, amount));
-                for (encrypted_file_name, _chunks) in file_list.iter() {
-                    let encrypted_data: EncryptedData = encrypted_file_name
-                        .parse()
-                        .expect("Could not parse file name");
-                    let file_name =
-                        String::from_utf8(model.decrypt(encrypted_data)).expect("Invalid UTF8");
-                    model
-                        .files
-                        .insert(file_name.clone(), (encrypted_file_name.clone(), 0, vec![]));
-                    model
-                        .file_buffer
-                        .insert(file_name.clone(), vec![vec![]; file_list[current_index].1]);
-                }
-            }
-
-            let request = shared::Request::GetFileChunk {
-                uuid: model.uuid.expect("no uuid"),
-                file_name: file_list[current_index].0.clone(),
-                chunk_index: chunk,
-            };
-
-            orders.perform_cmd(async move {
-                Msg::Response(send_request(&request, "/get_file_chunk").await)
-            });
-
-            let (next_index, next_chunk) = if chunk < file_list[current_index].1 - 1 {
-                (current_index, chunk + 1)
-            } else {
-                (current_index + 1, 0)
-            };
-
-            if next_index < file_list.len() {
-                orders.after_next_render(move |_| {
-                    Msg::DecryptFiles(next_index, next_chunk, file_list)
-                });
-            }
-        }
-        Msg::PushFiles => {
-            for (file_name, file_chunks) in model.file_buffer.iter_mut() {
-                let mut all_chunks: Vec<u8> = vec![];
-                for chunk in file_chunks.iter_mut() {
-                    all_chunks.append(chunk);
-                }
-                let file = gloo_file::File::new(file_name, all_chunks.as_slice());
-                let blob = gloo_file::Blob::from(file);
-                let download_url = web_sys::Url::create_object_url_with_blob(&blob.into()).unwrap();
-                model
-                    .blob_list
-                    .push((download_url.clone(), file_name.clone()));
-            }
         }
     }
 }
@@ -453,7 +448,7 @@ fn view(model: &SecretShare) -> Vec<Node<Msg>> {
                             let percentage = 100 * cur / over;
                             let background = format!("linear-gradient(90deg, #eee {}%, white 0)", percentage);
                             div![C!["card"], style![St::TextAlign => "center", St::Background => background],
-                                format!("Receiving and decrypting Parts: {}/{}", cur, over)
+                                format!("Receiving and decrypting Files: {}/{}", cur, over)
                             ]
                         }else{
                             div![]
@@ -601,7 +596,7 @@ fn view(model: &SecretShare) -> Vec<Node<Msg>> {
                                 let percentage = 100 * cur / over;
                                 let background = format!("linear-gradient(90deg, #eee {}%, white 0)", percentage);
                                 div![C!["card"], style![St::TextAlign => "center", St::Background => background],
-                                    format!("Encrypting and Sending Parts: {}/{}", cur, over)
+                                    format!("Encrypting and Sending Files: {}/{}", cur, over)
                                 ]
                             } else {
                                 div![]

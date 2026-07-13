@@ -13,7 +13,7 @@ use askama::Template;
 use byte_unit::Byte;
 use lazy_static::lazy_static;
 use redb::Database;
-use shared::{Config, FileChunk, Lifetime, Request, Response};
+use shared::{Config, Lifetime, Request, Response};
 use std::str::FromStr;
 use uuid::Uuid;
 
@@ -59,10 +59,6 @@ lazy_static! {
         .and_then(|max_files_size| Byte::from_str(&max_files_size).ok())
         .map(|max_files_size| max_files_size.as_u64())
         .unwrap_or(25 * 1024 * 1024);
-
-    // not too big, not too small
-    static ref CHUNK_SIZE : usize = 123_456 * 4;
-
 }
 
 #[derive(Template)]
@@ -128,7 +124,6 @@ fn render_index_page(error: String, info: String, password_required: bool) -> im
             lifetimes: DEFAULT_LIFETIMES.clone(),
             max_files: *MAX_FILES,
             max_files_size: *MAX_FILES_SIZE,
-            chunk_size: *CHUNK_SIZE,
         }),
     };
 
@@ -169,66 +164,41 @@ async fn get_secret(db: web::Data<Database>, params: web::Json<Request>) -> impl
         Err(msg) => return HttpResponse::Ok().json(Response::Error(format!("Error: {}", msg))),
     };
 
-    // chunk count follows from the declared size, no scan needed
-    let file_list = entry
-        .file_list
-        .iter()
-        .map(|(file_name, size)| {
-            (file_name.clone(), (*size as usize).div_ceil(*CHUNK_SIZE))
-        })
-        .collect();
+    let file_list = entry.file_list.keys().cloned().collect();
 
     HttpResponse::Ok().json(Response::Secret((entry.secret, file_list)))
 }
 
-#[post("/file_chunk")]
-async fn file_chunk(db: web::Data<Database>, params: web::Json<Request>) -> impl Responder {
-    let (uuid, file_name, chunk_index, chunk) = if let Json(Request::SendFileChunk {
-        uuid,
-        file_name,
-        chunk_index,
-        chunk,
-    }) = params
-    {
-        (uuid, file_name, chunk_index, chunk)
-    } else {
-        return HttpResponse::BadRequest().finish();
-    };
+#[post("/file/{uuid}/{file_name}")]
+async fn upload_file(
+    db: web::Data<Database>,
+    path: web::Path<(Uuid, String)>,
+    body: web::Bytes,
+) -> impl Responder {
+    let (uuid, file_name) = path.into_inner();
 
-    match storage::set_chunk(&db, &uuid.to_string(), &file_name, chunk_index, &chunk) {
+    match storage::set_file(&db, &uuid.to_string(), &file_name, &body) {
         Ok(true) => HttpResponse::Ok().json(Response::Ok),
-        Ok(false) => HttpResponse::Ok().json(Response::Error(
-            "Unknown secret or undeclared file name.".to_string(),
-        )),
-        Err(msg) => HttpResponse::Ok().json(Response::Error(format!("Error: {}", msg))),
+        Ok(false) => HttpResponse::NotFound()
+            .body("Unknown secret, undeclared file name or size mismatch."),
+        Err(msg) => HttpResponse::InternalServerError().body(format!("Error: {}", msg)),
     }
 }
 
-#[post("/get_file_chunk")]
-async fn get_file_chunk(db: web::Data<Database>, params: web::Json<Request>) -> impl Responder {
-    let (uuid, file_name, chunk_index) = if let Json(Request::GetFileChunk {
-        uuid,
-        file_name,
-        chunk_index,
-    }) = params
-    {
-        (uuid, file_name, chunk_index)
-    } else {
-        return HttpResponse::BadRequest().finish();
-    };
+// POST because fetching consumes the file (one-time read) — it must never be cached
+#[post("/get_file/{uuid}/{file_name}")]
+async fn download_file(
+    db: web::Data<Database>,
+    path: web::Path<(Uuid, String)>,
+) -> impl Responder {
+    let (uuid, file_name) = path.into_inner();
 
-    let Ok(encrypted_file_name) = file_name.parse() else {
-        return HttpResponse::Ok().json(Response::Error("Invalid file name.".to_string()));
-    };
-
-    match storage::take_chunk(&db, &uuid.to_string(), &file_name, chunk_index) {
-        Ok(Some(chunk)) => HttpResponse::Ok().json(Response::FileChunk(FileChunk {
-            file_name: encrypted_file_name,
-            index: chunk_index,
-            chunk,
-        })),
-        Ok(None) => HttpResponse::Ok().json(Response::Error("Chunk not found.".to_string())),
-        Err(msg) => HttpResponse::Ok().json(Response::Error(format!("Error: {}", msg))),
+    match storage::take_file(&db, &uuid.to_string(), &file_name) {
+        Ok(Some(bytes)) => HttpResponse::Ok()
+            .content_type("application/octet-stream")
+            .body(bytes),
+        Ok(None) => HttpResponse::NotFound().body("File not found."),
+        Err(msg) => HttpResponse::InternalServerError().body(format!("Error: {}", msg)),
     }
 }
 
@@ -262,6 +232,13 @@ async fn new_secret(db: web::Data<Database>, params: web::Json<Request>) -> impl
     } else {
         return HttpResponse::InternalServerError().body("Error: Invalid Lifetime");
     };
+
+    // the client enforces these for UX; enforce them here for real
+    if file_list.len() > *MAX_FILES as usize
+        || file_list.values().sum::<u64>() > *MAX_FILES_SIZE
+    {
+        return HttpResponse::BadRequest().body("Error: File limits exceeded");
+    }
 
     let key = Uuid::new_v4();
 
@@ -301,16 +278,20 @@ async fn main() -> std::io::Result<()> {
     println!("Listening on: {}", adress);
 
     HttpServer::new(move || {
+        // raw upload bodies: declared file size + AES-GCM overhead, with slack
+        let payload_limit = *MAX_FILES_SIZE as usize + 1024;
+
         let app = App::new()
             .app_data(db.clone())
+            .app_data(web::PayloadConfig::new(payload_limit))
             .wrap(Compress::default())
             .wrap(Logger::default())
             .service(index)
-            .service(index_uuid)
             .service(new_secret)
             .service(get_secret)
-            .service(file_chunk)
-            .service(get_file_chunk);
+            .service(upload_file)
+            .service(download_file)
+            .service(index_uuid);
 
         app.service(Files::new("/pkg", "./client_seed/dist/").prefer_utf8(true))
     })

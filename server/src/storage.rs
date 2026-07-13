@@ -5,9 +5,12 @@ use shared::EncryptedData;
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-// value = (expires_at unix seconds, serde_json payload)
+// value = (expires_at unix seconds, payload — serde_json for entries, raw bytes for files)
 const ENTRIES: TableDefinition<&str, (u64, &[u8])> = TableDefinition::new("entries");
-const CHUNKS: TableDefinition<&str, (u64, &[u8])> = TableDefinition::new("chunks");
+const FILES: TableDefinition<&str, (u64, &[u8])> = TableDefinition::new("files");
+
+// AES-GCM overhead on top of the declared plaintext size: 12-byte IV + 16-byte tag
+const FILE_OVERHEAD: u64 = 28;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Entry {
@@ -29,8 +32,8 @@ fn now() -> u64 {
         .as_secs()
 }
 
-fn chunk_key(uuid: &str, file_name: &str, index: usize) -> String {
-    format!("{}-{}-{}", uuid, file_name, index)
+fn file_key(uuid: &str, file_name: &str) -> String {
+    format!("{}-{}", uuid, file_name)
 }
 
 pub fn open(path: &str) -> Result<Database> {
@@ -38,7 +41,7 @@ pub fn open(path: &str) -> Result<Database> {
     // create the tables so readers never see a missing table
     let txn = db.begin_write()?;
     txn.open_table(ENTRIES)?;
-    txn.open_table(CHUNKS)?;
+    txn.open_table(FILES)?;
     txn.commit()?;
     Ok(db)
 }
@@ -102,38 +105,31 @@ pub fn take_entry_if(
     Ok(take)
 }
 
-/// Store a file chunk. Rejects chunks for unknown secrets or file names that
-/// were not declared at creation time; the chunk inherits the entry's expiry.
-pub fn set_chunk(
-    db: &Database,
-    uuid: &str,
-    file_name: &str,
-    index: usize,
-    chunk: &EncryptedData,
-) -> Result<bool> {
+/// Store an encrypted file blob. Rejects files for unknown secrets, file
+/// names that were not declared at creation time, and blobs larger than the
+/// declared size (plus crypto overhead); the file inherits the entry's expiry.
+pub fn set_file(db: &Database, uuid: &str, file_name: &str, bytes: &[u8]) -> Result<bool> {
     let txn = db.begin_write()?;
     let accepted = {
         let entries = txn.open_table(ENTRIES)?;
         let expires_at = match entries.get(uuid)? {
             Some(guard) => {
-                let (expires_at, bytes) = guard.value();
+                let (expires_at, entry_bytes) = guard.value();
                 if expires_at <= now() {
                     None
                 } else {
-                    serde_json::from_slice::<Entry>(bytes)
+                    serde_json::from_slice::<Entry>(entry_bytes)
                         .ok()
-                        .filter(|entry| entry.file_list.contains_key(file_name))
+                        .and_then(|entry| entry.file_list.get(file_name).copied())
+                        .filter(|declared_size| bytes.len() as u64 <= declared_size + FILE_OVERHEAD)
                         .map(|_| expires_at)
                 }
             }
             None => None,
         };
         if let Some(expires_at) = expires_at {
-            let bytes = serde_json::to_vec(chunk)?;
-            txn.open_table(CHUNKS)?.insert(
-                chunk_key(uuid, file_name, index).as_str(),
-                (expires_at, bytes.as_slice()),
-            )?;
+            txn.open_table(FILES)?
+                .insert(file_key(uuid, file_name).as_str(), (expires_at, bytes))?;
             true
         } else {
             false
@@ -143,31 +139,26 @@ pub fn set_chunk(
     Ok(accepted)
 }
 
-/// Atomically remove and return a file chunk (chunks are one-time reads too).
-pub fn take_chunk(
-    db: &Database,
-    uuid: &str,
-    file_name: &str,
-    index: usize,
-) -> Result<Option<EncryptedData>> {
+/// Atomically remove and return a file blob (files are one-time reads too).
+pub fn take_file(db: &Database, uuid: &str, file_name: &str) -> Result<Option<Vec<u8>>> {
     let txn = db.begin_write()?;
-    let chunk = {
-        let mut table = txn.open_table(CHUNKS)?;
-        let removed = table.remove(chunk_key(uuid, file_name, index).as_str())?;
+    let file = {
+        let mut table = txn.open_table(FILES)?;
+        let removed = table.remove(file_key(uuid, file_name).as_str())?;
         match removed {
             Some(guard) => {
                 let (expires_at, bytes) = guard.value();
                 if expires_at <= now() {
                     None
                 } else {
-                    Some(serde_json::from_slice(bytes)?)
+                    Some(bytes.to_vec())
                 }
             }
             None => None,
         }
     };
     txn.commit()?;
-    Ok(chunk)
+    Ok(file)
 }
 
 /// Delete expired rows. Called periodically; the tables only ever hold a
@@ -177,7 +168,7 @@ pub fn sweep(db: &Database) -> Result<()> {
     let cutoff = now();
     txn.open_table(ENTRIES)?
         .retain(|_, (expires_at, _)| expires_at > cutoff)?;
-    txn.open_table(CHUNKS)?
+    txn.open_table(FILES)?
         .retain(|_, (expires_at, _)| expires_at > cutoff)?;
     txn.commit()?;
     Ok(())
@@ -223,16 +214,13 @@ mod tests {
         ));
         assert!(get_entry(&db, "b").unwrap().is_some());
 
-        // chunks: only declared files accepted, one-time read
-        let chunk = EncryptedData {
-            data: vec![9],
-            nonce: "n".to_string(),
-        };
-        assert!(set_chunk(&db, "b", "f", 0, &chunk).unwrap());
-        assert!(!set_chunk(&db, "b", "other", 0, &chunk).unwrap());
-        assert!(!set_chunk(&db, "missing", "f", 0, &chunk).unwrap());
-        assert!(take_chunk(&db, "b", "f", 0).unwrap().is_some());
-        assert!(take_chunk(&db, "b", "f", 0).unwrap().is_none());
+        // files: only declared names accepted, size bounded, one-time read
+        assert!(set_file(&db, "b", "f", &[9; 100]).unwrap());
+        assert!(!set_file(&db, "b", "other", &[9]).unwrap());
+        assert!(!set_file(&db, "missing", "f", &[9]).unwrap());
+        assert!(!set_file(&db, "b", "f", &[9; 200]).unwrap()); // over declared size
+        assert!(take_file(&db, "b", "f").unwrap().is_some());
+        assert!(take_file(&db, "b", "f").unwrap().is_none());
 
         // ttl 0 == already expired; sweep removes it physically
         set_entry(&db, "c", &test_entry("f"), 0).unwrap();

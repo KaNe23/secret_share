@@ -46,17 +46,6 @@ pub enum Request {
         lifetime: Lifetime,
         file_list: HashMap<String, u64>,
     },
-    SendFileChunk {
-        uuid: Uuid,
-        file_name: String,
-        chunk_index: usize,
-        chunk: EncryptedData,
-    },
-    GetFileChunk {
-        uuid: Uuid,
-        file_name: String,
-        chunk_index: usize,
-    },
     GetSecret {
         uuid: Uuid,
         password: String,
@@ -175,17 +164,9 @@ impl Lifetime {
 // }
 
 #[derive(Serialize, Deserialize, Clone)]
-pub struct FileChunk {
-    pub file_name: EncryptedData,
-    pub index: usize,
-    pub chunk: EncryptedData,
-}
-
-#[derive(Serialize, Deserialize, Clone)]
 pub enum Response {
     Error(String),
-    Secret((EncryptedData, Vec<(String, usize)>)),
-    FileChunk(FileChunk),
+    Secret((EncryptedData, Vec<String>)),
     Uuid(Uuid),
     Ok,
 }
@@ -201,7 +182,6 @@ pub struct Config {
     pub lifetimes: Vec<Lifetime>,
     pub max_files: i32,
     pub max_files_size: u64,
-    pub chunk_size: usize,
 }
 
 impl Default for Config {
@@ -216,7 +196,6 @@ impl Default for Config {
             lifetimes: vec![Lifetime::Days(7)],
             max_files: 5,
             max_files_size: 25 * 1024 * 1024,
-            chunk_size: 123_456 * 4,
         }
     }
 }
