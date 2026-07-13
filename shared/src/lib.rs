@@ -26,16 +26,12 @@ impl FromStr for EncryptedData {
         let mut parts = string.split('.');
         let data_part = parts.next();
         let nonce_part = parts.next();
-        if let Some(data) = data_part {
-            if let Some(nonce) = nonce_part {
-                let data = hex::decode(data).expect("Could not decode hex value");
-                Ok(EncryptedData {
-                    data,
-                    nonce: nonce.to_string(),
-                })
-            } else {
-                Err(DecodeError)
-            }
+        if let (Some(data), Some(nonce)) = (data_part, nonce_part) {
+            let data = hex::decode(data).map_err(|_| DecodeError)?;
+            Ok(EncryptedData {
+                data,
+                nonce: nonce.to_string(),
+            })
         } else {
             Err(DecodeError)
         }

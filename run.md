@@ -7,7 +7,7 @@
 - musl
 - (rustup target add x86_64-unknown-linux-musl)
 
-# build and run locally (redis not included)
+# build and run locally
 trunk build --release client_seed/index.j2 &&
 cargo run --release
 

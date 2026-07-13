@@ -1,4 +1,4 @@
-mod entry;
+mod storage;
 
 use actix_files::Files;
 use actix_web::{
@@ -9,23 +9,19 @@ use actix_web::{
     web::{self, Json},
     App, HttpResponse, HttpServer, Responder,
 };
-use anyhow::{Error, Result};
 use askama::Template;
 use byte_unit::Byte;
 use lazy_static::lazy_static;
-use redis::{aio::MultiplexedConnection as Connection, AsyncCommands, Client, RedisResult};
+use redb::Database;
 use shared::{Config, FileChunk, Lifetime, Request, Response};
 use std::str::FromStr;
 use uuid::Uuid;
 
-use crate::entry::Entry;
+use crate::storage::{Entry, Take};
 
 lazy_static! {
-    static ref REDIS_HOST: String = if let Ok(redis_host) = std::env::var("REDIS_HOST") {
-        format!("redis://{}/", redis_host)
-    } else {
-        "redis://127.0.0.1/".to_string()
-    };
+    static ref DB_PATH: String =
+        std::env::var("DB_PATH").unwrap_or_else(|_| "secret_share.redb".to_string());
     static ref MAX_LENGTH: i32 = std::env::var("MAX_LENGTH")
         .ok()
         .and_then(|max_length| max_length.parse().ok())
@@ -76,7 +72,7 @@ struct IndexTemplate {
 }
 
 #[get("/{uuid}")]
-async fn index_uuid(uuid: web::Path<String>) -> impl Responder {
+async fn index_uuid(db: web::Data<Database>, uuid: web::Path<String>) -> impl Responder {
     let key = match Uuid::from_str(&uuid) {
         Ok(key) => key,
         Err(_msg) => {
@@ -88,20 +84,13 @@ async fn index_uuid(uuid: web::Path<String>) -> impl Responder {
         }
     };
 
-    match key_exists(key).await {
-        Ok(false) => {
-            return render_index_page(
-                "Secret expired, not found or already viewed.".to_string(),
-                "".into(),
-                false,
-            )
-        }
-        Err(msg) => return render_index_page(format!("Error: {}", msg), "".into(), false),
-        _ => {}
-    }
-
-    match find_entry(key).await {
-        Ok((_uuid, entry)) => {
+    match storage::get_entry(&db, &key.to_string()) {
+        Ok(None) => render_index_page(
+            "Secret expired, not found or already viewed.".to_string(),
+            "".into(),
+            false,
+        ),
+        Ok(Some(entry)) => {
             let file_info = if !entry.file_list.is_empty() {
                 let size = entry.file_list.iter().fold(0, |acc, (_, size)| acc + size);
                 let size = Byte::from_u64(size).get_appropriate_unit(byte_unit::UnitType::Binary);
@@ -155,56 +144,45 @@ async fn index() -> impl Responder {
 }
 
 #[post("/get_secret")]
-async fn get_secret(params: web::Json<Request>) -> impl Responder {
+async fn get_secret(db: web::Data<Database>, params: web::Json<Request>) -> impl Responder {
     let (key, password) = if let Json(Request::GetSecret { uuid, password }) = params {
         (uuid, password)
     } else {
         return HttpResponse::Ok().json(Response::Error("Invalid request!".to_string()));
     };
 
-    let (mut store, entry) = match find_entry(key).await {
-        Ok((store, key)) => (store, key),
+    let take = storage::take_entry_if(&db, &key.to_string(), |entry| match &entry.password {
+        Some(hash) => bcrypt::verify(&password, hash).unwrap_or(false),
+        None => true,
+    });
+
+    let entry = match take {
+        Ok(Take::Taken(entry)) => entry,
+        Ok(Take::Rejected) => {
+            return HttpResponse::Ok().json(Response::Error("Invalid password!".to_string()))
+        }
+        Ok(Take::Missing) => {
+            return HttpResponse::Ok().json(Response::Error(
+                "Secret expired, not found or already viewed.".to_string(),
+            ))
+        }
         Err(msg) => return HttpResponse::Ok().json(Response::Error(format!("Error: {}", msg))),
     };
 
-    if let Some(entry_password) = entry.password {
-        match bcrypt::verify(password, &entry_password) {
-            Ok(false) => {
-                return HttpResponse::Ok().json(Response::Error("Invalid password!".to_string()));
-            }
-            Err(msg) => {
-                return HttpResponse::Ok().json(Response::Error(format!(
-                    "Error while validating password: {}",
-                    msg
-                )));
-            }
-            _ => {}
-        }
-    }
-
-    let result: redis::RedisResult<Entry> = store.del(&key.to_string()).await;
-
-    if let Err(msg) = result {
-        return HttpResponse::InternalServerError().body(format!("Error: {}", msg));
-    }
-
-    let mut file_list = Vec::new();
-
-    for (file_name, _) in entry.file_list.iter() {
-        let chunks: Vec<String> = match store.keys(format!("{}-{}-*", key, file_name)).await {
-            Ok(list) => list,
-            Err(e) => {
-                return HttpResponse::Ok().json(Response::Error(format!("Redis error: {}", e)))
-            }
-        };
-        file_list.push((file_name.clone(), chunks.len()));
-    }
+    // chunk count follows from the declared size, no scan needed
+    let file_list = entry
+        .file_list
+        .iter()
+        .map(|(file_name, size)| {
+            (file_name.clone(), (*size as usize).div_ceil(*CHUNK_SIZE))
+        })
+        .collect();
 
     HttpResponse::Ok().json(Response::Secret((entry.secret, file_list)))
 }
 
 #[post("/file_chunk")]
-async fn file_chunk(params: web::Json<Request>) -> impl Responder {
+async fn file_chunk(db: web::Data<Database>, params: web::Json<Request>) -> impl Responder {
     let (uuid, file_name, chunk_index, chunk) = if let Json(Request::SendFileChunk {
         uuid,
         file_name,
@@ -217,16 +195,17 @@ async fn file_chunk(params: web::Json<Request>) -> impl Responder {
         return HttpResponse::BadRequest().finish();
     };
 
-    if let Ok(mut store) = get_storage().await {
-        let u_file_name = format!("{}-{}-{}", uuid, file_name, chunk_index);
-        let _result: RedisResult<String> = store.set(u_file_name, chunk.to_string()).await;
+    match storage::set_chunk(&db, &uuid.to_string(), &file_name, chunk_index, &chunk) {
+        Ok(true) => HttpResponse::Ok().json(Response::Ok),
+        Ok(false) => HttpResponse::Ok().json(Response::Error(
+            "Unknown secret or undeclared file name.".to_string(),
+        )),
+        Err(msg) => HttpResponse::Ok().json(Response::Error(format!("Error: {}", msg))),
     }
-
-    HttpResponse::Ok().json(Response::Ok)
 }
 
 #[post("/get_file_chunk")]
-async fn get_file_chunk(params: web::Json<Request>) -> impl Responder {
+async fn get_file_chunk(db: web::Data<Database>, params: web::Json<Request>) -> impl Responder {
     let (uuid, file_name, chunk_index) = if let Json(Request::GetFileChunk {
         uuid,
         file_name,
@@ -238,29 +217,23 @@ async fn get_file_chunk(params: web::Json<Request>) -> impl Responder {
         return HttpResponse::BadRequest().finish();
     };
 
-    if let Ok(mut store) = get_storage().await {
-        let u_file_name = format!("{}-{}-{}", uuid, file_name, chunk_index);
-        match store.get(&u_file_name).await {
-            Ok(chunk) => {
-                let nom: String = chunk;
-                let fc: FileChunk = FileChunk {
-                    file_name: file_name.parse().expect("could not parse"),
-                    index: chunk_index,
-                    chunk: nom.parse().expect("could not parse"),
-                };
-                // we just got the entry, so we can delete it without checking the result, I guess
-                let _result: redis::RedisResult<Entry> = store.del(&u_file_name).await;
-                HttpResponse::Ok().json(Response::FileChunk(fc))
-            }
-            Err(e) => HttpResponse::Ok().json(Response::Error(format!("Redis error: {}", e))),
-        }
-    } else {
-        HttpResponse::Ok().json(Response::Error("Could not get storage".into()))
+    let Ok(encrypted_file_name) = file_name.parse() else {
+        return HttpResponse::Ok().json(Response::Error("Invalid file name.".to_string()));
+    };
+
+    match storage::take_chunk(&db, &uuid.to_string(), &file_name, chunk_index) {
+        Ok(Some(chunk)) => HttpResponse::Ok().json(Response::FileChunk(FileChunk {
+            file_name: encrypted_file_name,
+            index: chunk_index,
+            chunk,
+        })),
+        Ok(None) => HttpResponse::Ok().json(Response::Error("Chunk not found.".to_string())),
+        Err(msg) => HttpResponse::Ok().json(Response::Error(format!("Error: {}", msg))),
     }
 }
 
 #[post("/new_secret")]
-async fn new_secret(params: web::Json<Request>) -> impl Responder {
+async fn new_secret(db: web::Data<Database>, params: web::Json<Request>) -> impl Responder {
     let (secret, password, lifetime, file_list) = if let Json(Request::CreateSecret {
         secret,
         password,
@@ -290,54 +263,19 @@ async fn new_secret(params: web::Json<Request>) -> impl Responder {
         return HttpResponse::InternalServerError().body("Error: Invalid Lifetime");
     };
 
-    let mut store = match get_storage().await {
-        Ok(store) => store,
-        Err(msg) => return HttpResponse::InternalServerError().body(format!("Error: {}", msg)),
-    };
-
     let key = Uuid::new_v4();
 
-    let result: RedisResult<Entry> = store
-        .set(
-            key.to_string(),
-            Entry {
-                secret,
-                password,
-                file_list,
-            },
-        )
-        .await;
+    let entry = Entry {
+        secret,
+        password,
+        file_list,
+    };
 
-    if let Err(msg) = result {
+    if let Err(msg) = storage::set_entry(&db, &key.to_string(), &entry, lifetime as u64) {
         return HttpResponse::InternalServerError().body(format!("Error: {}", msg));
     }
 
-    let result: RedisResult<Entry> = store.expire(key.to_string(), lifetime as i64).await;
-
-    if let Err(msg) = result {
-        return HttpResponse::InternalServerError().body(format!("Error: {}", msg));
-    }
-
-    let response = Response::Uuid(key);
-
-    HttpResponse::Ok().json(response)
-}
-
-async fn get_storage() -> Result<Connection, Error> {
-    let client = Client::open(REDIS_HOST.clone())?;
-    let connection = client.get_multiplexed_async_connection().await?;
-    Ok(connection)
-}
-
-async fn find_entry(key: Uuid) -> Result<(Connection, Entry), Error> {
-    let mut store = get_storage().await?;
-    let entry: Entry = store.get(key.to_string()).await?;
-    Ok((store, entry))
-}
-
-async fn key_exists(key: Uuid) -> Result<bool, Error> {
-    let mut store = get_storage().await?;
-    Ok(store.exists(&key.to_string()).await?)
+    HttpResponse::Ok().json(Response::Uuid(key))
 }
 
 #[actix_web::main]
@@ -345,16 +283,26 @@ async fn main() -> std::io::Result<()> {
     std::env::set_var("RUST_LOG", "actix_web=info");
     env_logger::init();
 
-    // for (key, var) in std::env::vars(){
-    //     println!("key: {} val: {}", key, var);
-    // }
+    let db = web::Data::new(storage::open(&DB_PATH).expect("Could not open database"));
+
+    let sweep_db = db.clone();
+    actix_web::rt::spawn(async move {
+        let mut interval = actix_web::rt::time::interval(std::time::Duration::from_secs(60));
+        loop {
+            interval.tick().await;
+            if let Err(e) = storage::sweep(&sweep_db) {
+                eprintln!("Sweep failed: {}", e);
+            }
+        }
+    });
 
     let adress = format!("0.0.0.0:{}", *PORT);
 
     println!("Listening on: {}", adress);
 
-    HttpServer::new(|| {
+    HttpServer::new(move || {
         let app = App::new()
+            .app_data(db.clone())
             .wrap(Compress::default())
             .wrap(Logger::default())
             .service(index)
