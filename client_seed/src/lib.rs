@@ -5,8 +5,8 @@ use std::fmt::Display;
 
 use byte_unit::Byte;
 use futures_util::StreamExt;
-use rand::distributions::Alphanumeric;
-use rand::{thread_rng, Rng};
+use rand::distr::Alphanumeric;
+use rand::{rng, RngExt};
 use secret_share::SecretShare;
 use seed::{a, nodes, window, JsFuture};
 use seed::{
@@ -24,7 +24,7 @@ enum Msg {
     SecretChanged(String),
     PasswordChanged(String),
     NewSecret,
-    Response(fetch::Result<shared::Response>),
+    Response(Result<shared::Response, gloo_net::Error>),
     GetSecret,
     CopyUrl,
     CopyResult(Result<JsValue, JsValue>),
@@ -32,7 +32,7 @@ enum Msg {
     DragOver,
     DragLeave,
     Drop(FileList),
-    FileRead((String, u128, Vec<u8>)),
+    FileRead((String, u64, Vec<u8>)),
     RemoveFile(String),
     EncryptFiles,
     DecryptFiles(usize, usize, Vec<(String, usize)>),
@@ -90,9 +90,7 @@ fn init(_: Url, _: &mut impl Orders<Msg>) -> SecretShare {
     let config: Config = window()
         .get("config")
         .and_then(|obj| {
-            // the new recommanded way has some problem with the u128
-            // serde_wasm_bindgen::from_value(obj.into()).ok()
-            obj.into_serde::<shared::Config>().ok()
+            serde_wasm_bindgen::from_value(obj.into()).ok()
         })
         .unwrap_or_default();
 
@@ -115,7 +113,7 @@ fn init(_: Url, _: &mut impl Orders<Msg>) -> SecretShare {
             },
             None => {
                 encrypt_key = Some(
-                    (&mut thread_rng())
+                    (&mut rng())
                         .sample_iter(Alphanumeric)
                         .take(32) // ChaCha20 needs key length of 32
                         .map(char::from)
@@ -136,19 +134,22 @@ fn init(_: Url, _: &mut impl Orders<Msg>) -> SecretShare {
     }
 }
 
-async fn send_request<V, T>(variables: &V, url: &str) -> fetch::Result<T>
+async fn send_request<V, T>(variables: &V, url: &str) -> Result<T, gloo_net::Error>
 where
     V: Serialize,
     T: for<'de> Deserialize<'de> + 'static,
 {
-    Request::new(url)
-        .method(Method::Post)
+    let response = gloo_net::http::Request::post(url)
         .json(variables)?
-        .fetch()
-        .await?
-        .check_status()?
-        .json()
-        .await
+        .send()
+        .await?;
+    if !response.ok() {
+        return Err(gloo_net::Error::GlooError(format!(
+            "HTTP status {}",
+            response.status()
+        )));
+    }
+    response.json().await
 }
 
 fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
@@ -281,15 +282,15 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
                 return;
             }
 
-            let new_files_size = files.iter().fold(0, |acc, file| acc + file.size() as u128);
+            let new_files_size = files.iter().fold(0, |acc, file| acc + file.size() as u64);
             let current_files_size = model
                 .files
                 .iter()
                 .fold(0, |acc, (_, (_, size, _))| acc + size);
             if new_files_size + current_files_size > model.config.max_files_size {
                 model.drop_zone_active = false;
-                let max_size =
-                    Byte::from_bytes(model.config.max_files_size).get_appropriate_unit(true);
+                let max_size = Byte::from_u64(model.config.max_files_size)
+                    .get_appropriate_unit(byte_unit::UnitType::Binary);
                 model.error = Some(format!("Max acc. file size of {} exceeded.", max_size));
                 return;
             }
@@ -309,7 +310,7 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
                             .expect("Could not cast JsValue into Uint8Array");
                         buffer.append(&mut data.to_vec());
                     }
-                    Msg::FileRead((file.name(), file.size() as u128, buffer))
+                    Msg::FileRead((file.name(), file.size() as u64, buffer))
                 });
             }
         }
@@ -330,7 +331,7 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
                 let chunks = model.files.iter().fold(0.0, |acc, (_, (_, _, data))| {
                     acc + (data.len() as f64 / model.config.chunk_size as f64).ceil()
                 });
-                model.cryption_in_progress = Some((0, chunks as u128));
+                model.cryption_in_progress = Some((0, chunks as u64));
             };
 
             for (_index, (_file_name, (encrypted_file_name, _size, data))) in
@@ -365,7 +366,7 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
         }
         Msg::DecryptFiles(current_index, chunk, file_list) => {
             if model.cryption_in_progress.is_none() {
-                let amount = file_list.iter().fold(0, |acc, amount| acc + amount.1) as u128;
+                let amount = file_list.iter().fold(0, |acc, amount| acc + amount.1) as u64;
                 model.cryption_in_progress = Some((0, amount));
                 for (encrypted_file_name, _chunks) in file_list.iter() {
                     let encrypted_data: EncryptedData = encrypted_file_name
@@ -568,9 +569,9 @@ fn view(model: &SecretShare) -> Vec<Node<Msg>> {
                     ],
                     IF!(!model.files.is_empty() =>
                         p![C!["3 col"], style![St::TextAlign => St::Right, St::Color => "#aaa"],
-                            {let curr_size = Byte::from_bytes(model.files.iter().fold(0, |acc, (_, (_, x, _))| acc + *x ));
-                            let max_size = Byte::from_bytes(model.config.max_files_size).get_appropriate_unit(true);
-                            format!("Max Size: {} / {}", curr_size.get_appropriate_unit(true), max_size)}
+                            {let curr_size = Byte::from_u64(model.files.iter().fold(0, |acc, (_, (_, x, _))| acc + *x ));
+                            let max_size = Byte::from_u64(model.config.max_files_size).get_appropriate_unit(byte_unit::UnitType::Binary);
+                            format!("Max Size: {} / {}", curr_size.get_appropriate_unit(byte_unit::UnitType::Binary), max_size)}
                         ]
                     )
                 ],

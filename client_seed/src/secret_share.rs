@@ -1,8 +1,8 @@
 use chacha20poly1305::aead::Aead;
 use chacha20poly1305::*;
-use rand::distributions::Alphanumeric;
-use rand::thread_rng;
-use rand::Rng;
+use rand::distr::Alphanumeric;
+use rand::rng;
+use rand::RngExt;
 use shared::Config;
 use shared::EncryptedData;
 use shared::Lifetime;
@@ -16,10 +16,10 @@ pub struct SecretShare {
     pub decrypt_key: Option<String>,
 
     pub drop_zone_active: bool,
-    pub files: HashMap<String, (String, u128, Vec<u8>)>,
+    pub files: HashMap<String, (String, u64, Vec<u8>)>,
     pub file_buffer: HashMap<String, Vec<Vec<u8>>>,
 
-    pub cryption_in_progress: Option<(u128, u128)>,
+    pub cryption_in_progress: Option<(u64, u64)>,
 
     pub clipboard_button_text: String,
     pub uuid: Option<Uuid>,
@@ -48,7 +48,7 @@ impl SecretShare {
     }
 
     fn generate_nonce(&self) -> String {
-        thread_rng()
+        rng()
             .sample_iter(Alphanumeric)
             .take(24) // ChaCha20 needs key length of 24
             .map(char::from)

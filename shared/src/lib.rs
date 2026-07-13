@@ -48,8 +48,7 @@ pub enum Request {
         secret: EncryptedData,
         password: Option<String>,
         lifetime: Lifetime,
-        // file_list: HashMap<String, u128>,
-        file_list: HashMap<String, u128>,
+        file_list: HashMap<String, u64>,
     },
     SendFileChunk {
         uuid: Uuid,
@@ -205,7 +204,7 @@ pub struct Config {
     pub password_required: bool,
     pub lifetimes: Vec<Lifetime>,
     pub max_files: i32,
-    pub max_files_size: u128,
+    pub max_files_size: u64,
     pub chunk_size: usize,
 }
 
@@ -220,7 +219,7 @@ impl Default for Config {
             password_required: false,
             lifetimes: vec![Lifetime::Days(7)],
             max_files: 5,
-            max_files_size: byte_unit::n_mib_bytes!(25),
+            max_files_size: 25 * 1024 * 1024,
             chunk_size: 123_456 * 4,
         }
     }

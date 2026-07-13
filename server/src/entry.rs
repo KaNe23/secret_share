@@ -1,6 +1,6 @@
-use redis::{ErrorKind, FromRedisValue, RedisError, RedisResult, RedisWrite, ToRedisArgs, Value};
+use redis::{FromRedisValue, ParsingError, RedisWrite, ToRedisArgs, ToSingleRedisArg, Value};
 use serde::{Deserialize, Serialize};
-use serde_json::{from_str, to_string};
+use serde_json::{from_slice, to_string};
 use shared::EncryptedData;
 use std::collections::HashMap;
 use std::str;
@@ -9,35 +9,22 @@ use std::str;
 pub struct Entry {
     pub secret: EncryptedData,
     pub password: Option<String>,
-    pub file_list: HashMap<String, u128>,
+    pub file_list: HashMap<String, u64>,
 }
 
 impl FromRedisValue for Entry {
-    fn from_redis_value(v: &redis::Value) -> RedisResult<Self> {
+    fn from_redis_value(v: Value) -> Result<Self, ParsingError> {
         match v {
-            Value::Nil => Err(RedisError::from((ErrorKind::ResponseError, "Not found"))),
-            Value::Data(_data) => {
-                let values: String = FromRedisValue::from_redis_value(v)?;
-                if let Ok(entry) = from_str(&values) {
-                    Ok(entry)
-                } else {
-                    Err(RedisError::from((
-                        ErrorKind::TypeError,
-                        "Could not deserialize Entry",
-                    )))
-                }
-            }
+            Value::Nil => Err("Not found".to_string().into()),
+            Value::BulkString(data) => from_slice(&data)
+                .map_err(|_| "Could not deserialize Entry".to_string().into()),
             // Okay and Int are good return values, but I have to return some kind of Entry anyway...
             Value::Okay | Value::Int(_) => Ok(Entry {
                 secret: EncryptedData { data: vec![], nonce: "".to_string() },
                 password: None,
                 file_list: HashMap::new(),
             }),
-            _ => Err(RedisError::from((
-                ErrorKind::ExtensionError,
-                "",
-                format!("Unexpected return type: {:?}", v),
-            ))),
+            _ => Err(format!("Unexpected return type: {:?}", v).into()),
         }
     }
 }
@@ -50,8 +37,6 @@ impl ToRedisArgs for Entry {
         let json = to_string(&self).expect("Could not serialize Entry");
         ToRedisArgs::write_redis_args(&json, out);
     }
-
-    fn is_single_arg(&self) -> bool {
-        false
-    }
 }
+
+impl ToSingleRedisArg for Entry {}

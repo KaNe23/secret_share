@@ -13,7 +13,7 @@ use anyhow::{Error, Result};
 use askama::Template;
 use byte_unit::Byte;
 use lazy_static::lazy_static;
-use redis::{aio::Connection, AsyncCommands, Client, RedisResult};
+use redis::{aio::MultiplexedConnection as Connection, AsyncCommands, Client, RedisResult};
 use shared::{Config, FileChunk, Lifetime, Request, Response};
 use std::str::FromStr;
 use uuid::Uuid;
@@ -58,11 +58,11 @@ lazy_static! {
         .ok()
         .and_then(|max_files| i32::from_str(&max_files).ok())
         .unwrap_or(5);
-    static ref MAX_FILES_SIZE: u128 = std::env::var("MAX_FILES_SIZE")
+    static ref MAX_FILES_SIZE: u64 = std::env::var("MAX_FILES_SIZE")
         .ok()
-        .and_then(|max_files_size| Byte::from_str(max_files_size).ok())
-        .and_then(|max_files_size| Some(max_files_size.get_bytes()))
-        .unwrap_or(byte_unit::n_mib_bytes!(25));
+        .and_then(|max_files_size| Byte::from_str(&max_files_size).ok())
+        .map(|max_files_size| max_files_size.as_u64())
+        .unwrap_or(25 * 1024 * 1024);
 
     // not too big, not too small
     static ref CHUNK_SIZE : usize = 123_456 * 4;
@@ -104,7 +104,7 @@ async fn index_uuid(uuid: web::Path<String>) -> impl Responder {
         Ok((_uuid, entry)) => {
             let file_info = if !entry.file_list.is_empty() {
                 let size = entry.file_list.iter().fold(0, |acc, (_, size)| acc + size);
-                let size = Byte::from_bytes(size).get_appropriate_unit(true);
+                let size = Byte::from_u64(size).get_appropriate_unit(byte_unit::UnitType::Binary);
                 format!(
                     "{} files(s) attached, accumulated size: {}",
                     entry.file_list.len(),
@@ -312,7 +312,7 @@ async fn new_secret(params: web::Json<Request>) -> impl Responder {
         return HttpResponse::InternalServerError().body(format!("Error: {}", msg));
     }
 
-    let result: RedisResult<Entry> = store.expire(key.to_string(), lifetime as usize).await;
+    let result: RedisResult<Entry> = store.expire(key.to_string(), lifetime as i64).await;
 
     if let Err(msg) = result {
         return HttpResponse::InternalServerError().body(format!("Error: {}", msg));
@@ -325,7 +325,7 @@ async fn new_secret(params: web::Json<Request>) -> impl Responder {
 
 async fn get_storage() -> Result<Connection, Error> {
     let client = Client::open(REDIS_HOST.clone())?;
-    let connection = client.get_async_std_connection().await?;
+    let connection = client.get_multiplexed_async_connection().await?;
     Ok(connection)
 }
 
