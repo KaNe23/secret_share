@@ -54,9 +54,10 @@ lazy_static! {
         .ok()
         .and_then(|max_files| i32::from_str(&max_files).ok())
         .unwrap_or(5);
+    // e.g. MAX_FILES_SIZE="50 MB" / "1GiB" / "25mb"
     static ref MAX_FILES_SIZE: u64 = std::env::var("MAX_FILES_SIZE")
         .ok()
-        .and_then(|max_files_size| Byte::from_str(&max_files_size).ok())
+        .and_then(|max_files_size| Byte::parse_str(&max_files_size, true).ok())
         .map(|max_files_size| max_files_size.as_u64())
         .unwrap_or(25 * 1024 * 1024);
 }
@@ -212,8 +213,7 @@ async fn new_secret(db: web::Data<Database>, params: web::Json<Request>) -> impl
     }) = params
     {
         let password = if let Some(password) = password {
-            // randomly choose cost of 5
-            if let Ok(result) = bcrypt::hash(password, 5) {
+            if let Ok(result) = bcrypt::hash(password, bcrypt::DEFAULT_COST) {
                 Some(result)
             } else {
                 return HttpResponse::InternalServerError().body("Error: Unable to hash password.");
