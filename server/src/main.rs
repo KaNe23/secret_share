@@ -69,30 +69,10 @@ lazy_static! {
 
 }
 
-#[cfg(all(feature = "frontend-yew", feature = "frontend-seed"))]
-compile_error!(
-    "feature \"frontend-yew\" and feature \"frontend-seed\" cannot be enabled at the same time"
-);
-
-#[cfg(not(any(feature = "frontend-yew", feature = "frontend-seed")))]
-compile_error!(
-    "Either feature \"frontend-yew\" or \"frontend-seed\" must be enabled for this crate."
-);
-
-cfg_if::cfg_if! {
-    if #[cfg(feature = "frontend-yew")] {
-        #[derive(Template)]
-        #[template(path = "index.html", escape = "none", config = "askama.toml")]
-        struct IndexTemplate {
-            json_config: Json<Config>,
-        }
-    } else if #[cfg(feature = "frontend-seed")] {
-        #[derive(Template)]
-        #[template(path = "index.html", escape = "none", config = "askama_seed.toml")]
-        struct IndexTemplate {
-            json_config: Json<Config>,
-        }
-    }
+#[derive(Template)]
+#[template(path = "index.html", escape = "none", config = "askama.toml")]
+struct IndexTemplate {
+    json_config: Json<Config>,
 }
 
 #[get("/{uuid}")]
@@ -384,12 +364,7 @@ async fn main() -> std::io::Result<()> {
             .service(file_chunk)
             .service(get_file_chunk);
 
-        #[cfg(feature = "frontend-yew")]
-        let app = app.service(Files::new("/pkg", "./client/dist/").prefer_utf8(true));
-        #[cfg(feature = "frontend-seed")]
-        let app = app.service(Files::new("/pkg", "./client_seed/dist/").prefer_utf8(true));
-
-        app
+        app.service(Files::new("/pkg", "./client_seed/dist/").prefer_utf8(true))
     })
     .bind(adress)?
     .run()

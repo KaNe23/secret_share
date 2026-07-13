@@ -252,10 +252,7 @@ fn update(msg: Msg, model: &mut SecretShare, orders: &mut impl Orders<Msg>) {
             }
         },
         Msg::CopyUrl => {
-            let clipboard = window()
-                .navigator()
-                .clipboard()
-                .expect("Could not access clipboard");
+            let clipboard = window().navigator().clipboard();
 
             let promise = Clipboard::write_text(&clipboard, &model.url());
             let future = JsFuture::from(promise);
