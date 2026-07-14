@@ -2,7 +2,7 @@ mod storage;
 
 use actix_files::Files;
 use actix_web::{
-    get,
+    get, middleware,
     middleware::Compress,
     middleware::Logger,
     post,
@@ -11,36 +11,39 @@ use actix_web::{
 };
 use askama::Template;
 use byte_unit::Byte;
-use lazy_static::lazy_static;
 use redb::Database;
 use shared::{Config, Lifetime, Request, Response};
 use std::str::FromStr;
+use std::sync::LazyLock;
 use uuid::Uuid;
 
 use crate::storage::{Entry, Take};
 
-lazy_static! {
-    static ref DB_PATH: String =
-        std::env::var("DB_PATH").unwrap_or_else(|_| "secret_share.redb".to_string());
-    static ref MAX_LENGTH: i32 = std::env::var("MAX_LENGTH")
+fn env_or<T: FromStr>(name: &str, default: T) -> T {
+    std::env::var(name)
         .ok()
-        .and_then(|max_length| max_length.parse().ok())
-        .unwrap_or(10000);
-    static ref BASE_URL: String = if let Ok(base_url) = std::env::var("BASE_URL") {
-        base_url
-    } else {
-        "http://localhost:8080".to_string()
-    };
-    static ref PORT: String = if let Ok(port) = std::env::var("PORT") {
-        port
-    } else {
-        "8080".to_string()
-    };
-    static ref KEY_LENGTH: i32 = std::env::var("KEY_LENGTH")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
+}
+
+static DB_PATH: LazyLock<String> =
+    LazyLock::new(|| env_or("DB_PATH", "secret_share.redb".to_string()));
+static MAX_LENGTH: LazyLock<i32> = LazyLock::new(|| env_or("MAX_LENGTH", 10000));
+static BASE_URL: LazyLock<String> =
+    LazyLock::new(|| env_or("BASE_URL", "http://localhost:8080".to_string()));
+static PORT: LazyLock<String> = LazyLock::new(|| env_or("PORT", "8080".to_string()));
+static KEY_LENGTH: LazyLock<i32> = LazyLock::new(|| env_or("KEY_LENGTH", 16));
+static MAX_FILES: LazyLock<i32> = LazyLock::new(|| env_or("MAX_FILES", 5));
+// e.g. MAX_FILES_SIZE="50 MB" / "1GiB" / "25mb"
+static MAX_FILES_SIZE: LazyLock<u64> = LazyLock::new(|| {
+    std::env::var("MAX_FILES_SIZE")
         .ok()
-        .and_then(|key_len| i32::from_str(&key_len).ok())
-        .unwrap_or(16);
-    static ref DEFAULT_LIFETIMES: Vec<Lifetime> = vec![
+        .and_then(|max_files_size| Byte::parse_str(&max_files_size, true).ok())
+        .map(|max_files_size| max_files_size.as_u64())
+        .unwrap_or(25 * 1024 * 1024)
+});
+static DEFAULT_LIFETIMES: LazyLock<Vec<Lifetime>> = LazyLock::new(|| {
+    vec![
         Lifetime::Days(7),
         Lifetime::Days(3),
         Lifetime::Days(1),
@@ -49,18 +52,8 @@ lazy_static! {
         Lifetime::Hours(1),
         Lifetime::Minutes(30),
         Lifetime::Minutes(5),
-    ];
-    static ref MAX_FILES: i32 = std::env::var("MAX_FILES")
-        .ok()
-        .and_then(|max_files| i32::from_str(&max_files).ok())
-        .unwrap_or(5);
-    // e.g. MAX_FILES_SIZE="50 MB" / "1GiB" / "25mb"
-    static ref MAX_FILES_SIZE: u64 = std::env::var("MAX_FILES_SIZE")
-        .ok()
-        .and_then(|max_files_size| Byte::parse_str(&max_files_size, true).ok())
-        .map(|max_files_size| max_files_size.as_u64())
-        .unwrap_or(25 * 1024 * 1024);
-}
+    ]
+});
 
 #[derive(Template)]
 #[template(path = "index.html", escape = "none", config = "askama.toml")]
@@ -240,6 +233,11 @@ async fn new_secret(db: web::Data<Database>, params: web::Json<Request>) -> impl
         return HttpResponse::BadRequest().body("Error: File limits exceeded");
     }
 
+    // ciphertext of the secret text: up to 4 bytes per char plus the GCM tag
+    if secret.data.len() > *MAX_LENGTH as usize * 4 + 16 {
+        return HttpResponse::BadRequest().body("Error: Secret too long");
+    }
+
     let key = Uuid::new_v4();
 
     let entry = Entry {
@@ -257,8 +255,8 @@ async fn new_secret(db: web::Data<Database>, params: web::Json<Request>) -> impl
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    std::env::set_var("RUST_LOG", "actix_web=info");
-    env_logger::init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("actix_web=info"))
+        .init();
 
     let db = web::Data::new(storage::open(&DB_PATH).expect("Could not open database"));
 
@@ -281,9 +279,20 @@ async fn main() -> std::io::Result<()> {
         // raw upload bodies: declared file size + AES-GCM overhead, with slack
         let payload_limit = *MAX_FILES_SIZE as usize + 1024;
 
+        // 'unsafe-inline' is needed for trunk's module loader, the config
+        // script and leptos style attributes; the exfiltration channels
+        // (connect, img, frames) stay locked to self regardless.
+        let csp = "default-src 'self'; \
+             script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; \
+             style-src 'self' 'unsafe-inline'; \
+             connect-src 'self'; img-src 'self' data:; \
+             object-src 'none'; frame-ancestors 'none'; \
+             base-uri 'none'; form-action 'self'";
+
         let app = App::new()
             .app_data(db.clone())
             .app_data(web::PayloadConfig::new(payload_limit))
+            .wrap(middleware::DefaultHeaders::new().add(("Content-Security-Policy", csp)))
             .wrap(Compress::default())
             .wrap(Logger::default())
             .service(index)
