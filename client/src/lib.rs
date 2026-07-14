@@ -440,7 +440,7 @@ fn CreateSecret(config: Config, key: String) -> impl IntoView {
             <textarea
                 class="col 6 card w-100"
                 style:resize="none"
-                style:margin-bottom="-2em"
+                style:vertical-align="top"
                 id="secret"
                 name="secret"
                 rows="10"
@@ -450,6 +450,7 @@ fn CreateSecret(config: Config, key: String) -> impl IntoView {
             ></textarea>
             <div
                 class=move || if drop_active.get() || !files.get().is_empty() { "col 6 card w-50" } else { "col 3 card w-50" }
+                style:vertical-align="top"
                 style:border-style="dashed"
                 style:border-radius="20px"
                 style:transition="width 0.25s ease-out"
