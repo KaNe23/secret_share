@@ -1,3 +1,4 @@
 /.vscode
 /target
-/storesecret_share.redb
+/store
+secret_share.redb
