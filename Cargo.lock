@@ -692,14 +692,13 @@ dependencies = [
 name = "client"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "byte-unit",
- "getrandom 0.4.3",
  "gloo-file",
  "gloo-net 0.7.0",
  "hex",
  "js-sys",
  "leptos",
- "rand 0.10.2",
  "serde",
  "serde-wasm-bindgen",
  "shared",

@@ -1,3 +1,5 @@
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use base64::Engine;
 use js_sys::{Array, Uint8Array};
 use shared::EncryptedData;
 use wasm_bindgen::{JsCast, JsValue};
@@ -5,10 +7,12 @@ use wasm_bindgen_futures::JsFuture;
 use web_sys::{AesGcmParams, Crypto, CryptoKey};
 
 const IV_LEN: usize = 12;
+const KEY_BYTES: usize = 32; // AES-256
 
 // Crypto: AES-256-GCM via the browser's SubtleCrypto. Runs off the main
 // thread natively, so whole files are encrypted in a single call — no
-// chunking, no workers.
+// chunking, no workers. Keys are 32 random bytes, base64url-encoded for
+// the url fragment.
 
 fn crypto() -> Crypto {
     web_sys::window()
@@ -21,9 +25,27 @@ fn err_str(e: JsValue) -> String {
     format!("Crypto error: {:?}", e)
 }
 
+pub fn generate_key() -> String {
+    let mut bytes = [0u8; KEY_BYTES];
+    crypto()
+        .get_random_values_with_u8_array(&mut bytes)
+        .expect("no randomness available");
+    URL_SAFE_NO_PAD.encode(bytes)
+}
+
+pub fn valid_key(key: &str) -> bool {
+    URL_SAFE_NO_PAD
+        .decode(key)
+        .map(|bytes| bytes.len() == KEY_BYTES)
+        .unwrap_or(false)
+}
+
 async fn import_key(key: &str) -> Result<CryptoKey, String> {
+    let bytes = URL_SAFE_NO_PAD
+        .decode(key)
+        .map_err(|_| "Invalid key".to_string())?;
     let usages = Array::of2(&"encrypt".into(), &"decrypt".into());
-    let key_data = Uint8Array::from(key.as_bytes());
+    let key_data = Uint8Array::from(bytes.as_slice());
     let promise = crypto()
         .subtle()
         .import_key_with_str("raw", &key_data, "AES-GCM", false, &usages)
@@ -101,43 +123,59 @@ mod tests {
     // SubtleCrypto only exists in a real browser context
     wasm_bindgen_test_configure!(run_in_browser);
 
-    const KEY: &str = "0123456789abcdefghijklmnopqrstuv"; // 32 chars
-    const OTHER_KEY: &str = "vutsrqponmlkjihgfedcba9876543210";
+    fn test_keys() -> (String, String) {
+        let key = generate_key();
+        assert!(valid_key(&key));
+        (key, generate_key())
+    }
 
     #[wasm_bindgen_test]
     async fn data_roundtrip() {
+        let (key, other_key) = test_keys();
         let message = "geheim väry sécret 🤫".as_bytes();
-        let encrypted = encrypt_data(KEY, message).await.unwrap();
+        let encrypted = encrypt_data(&key, message).await.unwrap();
 
         assert_ne!(encrypted.data, message);
         assert_eq!(hex::decode(&encrypted.nonce).unwrap().len(), IV_LEN);
-        assert_eq!(decrypt_data(KEY, &encrypted).await.unwrap(), message);
+        assert_eq!(decrypt_data(&key, &encrypted).await.unwrap(), message);
 
         // wrong key must fail, not garble
-        assert!(decrypt_data(OTHER_KEY, &encrypted).await.is_err());
+        assert!(decrypt_data(&other_key, &encrypted).await.is_err());
     }
 
     #[wasm_bindgen_test]
     async fn blob_roundtrip() {
+        let (key, _) = test_keys();
         let content = vec![42u8; 10_000];
-        let blob = encrypt_blob(KEY, &content).await.unwrap();
+        let blob = encrypt_blob(&key, &content).await.unwrap();
 
-        assert_eq!(decrypt_blob(KEY, &blob).await.unwrap(), content);
+        assert_eq!(decrypt_blob(&key, &blob).await.unwrap(), content);
 
         // GCM must reject a tampered ciphertext
         let mut tampered = blob.clone();
         *tampered.last_mut().unwrap() ^= 1;
-        assert!(decrypt_blob(KEY, &tampered).await.is_err());
+        assert!(decrypt_blob(&key, &tampered).await.is_err());
 
         // too short to even contain an IV
-        assert!(decrypt_blob(KEY, &blob[..5]).await.is_err());
+        assert!(decrypt_blob(&key, &blob[..5]).await.is_err());
     }
 
     #[wasm_bindgen_test]
     async fn unique_ivs() {
-        let first = encrypt_data(KEY, b"same message").await.unwrap();
-        let second = encrypt_data(KEY, b"same message").await.unwrap();
+        let (key, _) = test_keys();
+        let first = encrypt_data(&key, b"same message").await.unwrap();
+        let second = encrypt_data(&key, b"same message").await.unwrap();
         assert_ne!(first.nonce, second.nonce);
         assert_ne!(first.data, second.data);
+    }
+
+    #[wasm_bindgen_test]
+    fn key_validation() {
+        assert!(!valid_key("too-short"));
+        assert!(!valid_key("no spaces or + allowed in base64url!!!!!!!"));
+        assert!(!valid_key(""));
+        // 31 and 33 bytes encode fine but are not AES-256 keys
+        assert!(!valid_key(&URL_SAFE_NO_PAD.encode([1u8; 31])));
+        assert!(!valid_key(&URL_SAFE_NO_PAD.encode([1u8; 33])));
     }
 }

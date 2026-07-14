@@ -6,16 +6,12 @@ use byte_unit::{Byte, UnitType};
 use js_sys::Uint8Array;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use rand::distr::Alphanumeric;
-use rand::{rng, RngExt};
 use serde::{Deserialize, Serialize};
 use shared::{Config, EncryptedData, Lifetime};
 use uuid::Uuid;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{DragEvent, FileList, HtmlInputElement};
-
-const KEY_LEN: usize = 32; // AES-256 needs a 32 byte key
 
 #[derive(Clone)]
 struct FileEntry {
@@ -48,23 +44,19 @@ fn get_mode() -> Mode {
         let hash = url.hash();
 
         if let Ok(uuid) = Uuid::parse_str(pathname.trim_start_matches('/')) {
-            return if hash.is_empty() {
+            // hash contains # as first char
+            let key = hash.trim_start_matches('#');
+            return if key.is_empty() {
                 Mode::Broken("decrypt key missing from url".to_string())
-            } else if hash.len() - 1 != KEY_LEN {
-                Mode::Broken("decrypt key has invalid length".to_string())
+            } else if !crypto::valid_key(key) {
+                Mode::Broken("decrypt key is invalid, likely an incomplete link/url".to_string())
             } else {
-                // hash contains # as first char
-                Mode::View(uuid, hash.trim_start_matches('#').to_string())
+                Mode::View(uuid, key.to_string())
             };
         }
     }
 
-    let key = rng()
-        .sample_iter(Alphanumeric)
-        .take(KEY_LEN)
-        .map(char::from)
-        .collect::<String>();
-    Mode::Create(key)
+    Mode::Create(crypto::generate_key())
 }
 
 async fn send_request<V, T>(variables: &V, url: &str) -> Result<T, String>

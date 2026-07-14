@@ -9,10 +9,10 @@ never send to the server — the server stores nothing but ciphertext.
 
 ### Example
 
-`https://example.com/668d0fe2-b5ac-4c78-9e57-faa7c665b724#sXySruFg7KOhcWOesXySruFg7KOhcWOe`
+`https://example.com/668d0fe2-b5ac-4c78-9e57-faa7c665b724#3q0-q83vASNFZ4mrze8QIjNEVWZ3iJmqu8zd7v8`
 
 - `668d0fe2-b5ac-4c78-9e57-faa7c665b724` — random reference for the secret
-- `sXySruFg7KOhcWOe…` — the 256-bit AES key, only ever present in the fragment
+- `3q0-q83v…` — the 256-bit AES key (base64url), only ever present in the fragment
 
 Inspired by [onetimesecret](https://github.com/onetimesecret/onetimesecret).
 
