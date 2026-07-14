@@ -92,3 +92,52 @@ pub async fn decrypt_blob(key: &str, blob: &[u8]) -> Result<Vec<u8>, String> {
     let (iv, ciphertext) = blob.split_at(IV_LEN);
     decrypt_raw(key, ciphertext, iv).await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::*;
+
+    // SubtleCrypto only exists in a real browser context
+    wasm_bindgen_test_configure!(run_in_browser);
+
+    const KEY: &str = "0123456789abcdefghijklmnopqrstuv"; // 32 chars
+    const OTHER_KEY: &str = "vutsrqponmlkjihgfedcba9876543210";
+
+    #[wasm_bindgen_test]
+    async fn data_roundtrip() {
+        let message = "geheim väry sécret 🤫".as_bytes();
+        let encrypted = encrypt_data(KEY, message).await.unwrap();
+
+        assert_ne!(encrypted.data, message);
+        assert_eq!(hex::decode(&encrypted.nonce).unwrap().len(), IV_LEN);
+        assert_eq!(decrypt_data(KEY, &encrypted).await.unwrap(), message);
+
+        // wrong key must fail, not garble
+        assert!(decrypt_data(OTHER_KEY, &encrypted).await.is_err());
+    }
+
+    #[wasm_bindgen_test]
+    async fn blob_roundtrip() {
+        let content = vec![42u8; 10_000];
+        let blob = encrypt_blob(KEY, &content).await.unwrap();
+
+        assert_eq!(decrypt_blob(KEY, &blob).await.unwrap(), content);
+
+        // GCM must reject a tampered ciphertext
+        let mut tampered = blob.clone();
+        *tampered.last_mut().unwrap() ^= 1;
+        assert!(decrypt_blob(KEY, &tampered).await.is_err());
+
+        // too short to even contain an IV
+        assert!(decrypt_blob(KEY, &blob[..5]).await.is_err());
+    }
+
+    #[wasm_bindgen_test]
+    async fn unique_ivs() {
+        let first = encrypt_data(KEY, b"same message").await.unwrap();
+        let second = encrypt_data(KEY, b"same message").await.unwrap();
+        assert_ne!(first.nonce, second.nonce);
+        assert_ne!(first.data, second.data);
+    }
+}

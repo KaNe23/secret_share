@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown,x86_64-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install musl-tools and trunk
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
+          wget -qO- https://github.com/trunk-rs/trunk/releases/latest/download/trunk-x86_64-unknown-linux-gnu.tar.gz \
+            | sudo tar -xzf - -C /usr/local/bin
+
+      # frontend first: the server bakes client/dist/index.html into the
+      # binary (askama), so it must exist before the server compiles
+      - name: Build frontend
+        run: trunk build --release
+
+      - name: Server tests
+        run: cargo test
+
+      - name: Install wasm-pack
+        run: curl -sSf https://drager.github.io/wasm-pack/installer/init.sh | sh
+
+      - name: Crypto tests (headless Chrome)
+        run: wasm-pack test --headless --chrome client

@@ -40,3 +40,6 @@ gloo-net = "0.7"
 gloo-file = { version = "0.4", features = ["futures"] }
 
 shared = { path = "../shared" }
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3.76"
