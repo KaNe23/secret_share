@@ -1,3 +1,6 @@
 [build]
+target = "client/index.j2"
+# pinned explicitly: trunk versions disagree on what dist is relative to
+dist = "client/dist"
 # The public URL from which assets are to be served.
 public_url = "/pkg/"

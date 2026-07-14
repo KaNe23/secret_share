@@ -50,15 +50,13 @@ The default build target is `x86_64-unknown-linux-musl` (see `.cargo/config.toml
 
 ```sh
 # build the frontend, then run the server
-trunk build --release client/index.j2
+trunk build --release
 cargo run --release
 ```
 
-Or with Docker:
+Or with Docker (builds everything inside the image):
 
 ```sh
-trunk build --release client/index.j2
-cargo build --release
 docker compose up --build
 ```
 
