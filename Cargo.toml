@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["server", "shared", "client_seed"]
+members = ["server", "shared", "client"]
 default-members = ["server"]
 
 # use the following for binary size optimization:

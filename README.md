@@ -35,7 +35,7 @@ Inspired by [onetimesecret](https://github.com/onetimesecret/onetimesecret).
 | Piece | Tech |
 |---|---|
 | Server | [actix-web](https://actix.rs), [redb](https://github.com/cberner/redb) embedded storage |
-| Frontend | Rust → WebAssembly ([seed](https://seed-rs.org)), built with [trunk](https://trunkrs.dev) |
+| Frontend | Rust → WebAssembly ([Leptos](https://leptos.dev)), built with [trunk](https://trunkrs.dev) |
 | Crypto | AES-256-GCM via the browser's native `crypto.subtle` — no crypto code in the wasm bundle |
 
 The server is crypto-agnostic: it stores opaque ciphertext with a TTL and
@@ -50,14 +50,14 @@ The default build target is `x86_64-unknown-linux-musl` (see `.cargo/config.toml
 
 ```sh
 # build the frontend, then run the server
-trunk build --release client_seed/index.j2
+trunk build --release client/index.j2
 cargo run --release
 ```
 
 Or with Docker:
 
 ```sh
-trunk build --release client_seed/index.j2
+trunk build --release client/index.j2
 cargo build --release
 docker compose up --build
 ```

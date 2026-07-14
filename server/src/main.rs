@@ -293,7 +293,7 @@ async fn main() -> std::io::Result<()> {
             .service(download_file)
             .service(index_uuid);
 
-        app.service(Files::new("/pkg", "./client_seed/dist/").prefer_utf8(true))
+        app.service(Files::new("/pkg", "./client/dist/").prefer_utf8(true))
     })
     .bind(adress)?
     .run()

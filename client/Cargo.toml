@@ -1,18 +1,15 @@
 [package]
-name = "client_seed"
+name = "client"
 version = "0.1.0"
 edition = "2021"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
 crate-type = ["cdylib"]
 
 [dependencies]
-seed = "0.10"
+leptos = { version = "0.8", features = ["csr"] }
 serde = "1.0.228"
 serde-wasm-bindgen = "0.6"
-askama = "0.16"
 uuid = { version = "1.23.5", features = ["serde", "v4", "js"] }
 rand = "0.10"
 getrandom = { version = "0.4", features = ["wasm_js"] }
@@ -33,7 +30,9 @@ web-sys = { version = "0.3.103", features = [
     "Blob",
     "File",
     "FileList",
-    "DataTransfer"
+    "DataTransfer",
+    "DragEvent",
+    "HtmlInputElement",
 ] }
 wasm-bindgen-futures = "0.4.76"
 byte-unit = "5"
