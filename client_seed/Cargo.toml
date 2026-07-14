@@ -10,16 +10,16 @@ crate-type = ["cdylib"]
 
 [dependencies]
 seed = "0.10"
-serde = "1.0.145"
+serde = "1.0.228"
 serde-wasm-bindgen = "0.6"
 askama = "0.16"
-uuid = { version = "1.1.2", features = ["serde", "v4", "js"] }
+uuid = { version = "1.23.5", features = ["serde", "v4", "js"] }
 rand = "0.10"
 getrandom = { version = "0.4", features = ["wasm_js"] }
 hex = "0.4"
 js-sys = "0.3"
 wasm-bindgen = "0.2"
-web-sys = { version = "0.3.60", features = [
+web-sys = { version = "0.3.103", features = [
     "AesGcmParams",
     "Clipboard",
     "Crypto",
@@ -35,7 +35,7 @@ web-sys = { version = "0.3.60", features = [
     "FileList",
     "DataTransfer"
 ] }
-wasm-bindgen-futures = "0.4.33"
+wasm-bindgen-futures = "0.4.76"
 byte-unit = "5"
 gloo-net = "0.7"
 gloo-file = { version = "0.4", features = ["futures"] }
