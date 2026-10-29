@@ -1,0 +1,38 @@
+image:
+  repository: ghcr.io/kane23/secret_share
+  # Defaults to the chart's appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+# Settings from the README's environment table (MAX_LENGTH, KEY_LENGTH,
+# MAX_FILES, MAX_FILES_SIZE). BASE_URL defaults to https://<ingress.host>.
+env: {}
+
+# Extra env from Secrets/ConfigMaps managed outside the chart.
+envFrom: []
+
+# The redb file holding unread secrets. Without it a restart drops them.
+persistence:
+  enabled: true
+  size: 1Gi
+  storageClass: ""
+  existingClaim: ""
+
+service:
+  port: 8080
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  host: secrets.example.com
+  tls:
+    enabled: true
+    secretName: ""
+
+resources: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

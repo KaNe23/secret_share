@@ -36,3 +36,6 @@ jobs:
 
       - name: Crypto tests (headless Chrome)
         run: wasm-pack test --headless --chrome client
+
+      - name: Helm lint
+        run: helm lint charts/secret-share
