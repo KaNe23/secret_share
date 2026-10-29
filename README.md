@@ -73,6 +73,19 @@ All via environment variables:
 | `MAX_FILES` | `5` | Maximum number of attached files |
 | `MAX_FILES_SIZE` | `25 MiB` | Maximum accumulated file size, e.g. `50mb`, `1GiB` |
 
+### Kubernetes
+
+A Helm chart lives in `charts/secret-share`. Tagged releases publish it next to
+the image (`ghcr.io/kane23/secret_share`):
+
+```sh
+helm install secret-share oci://ghcr.io/kane23/charts/secret-share --version <version> \
+  --set ingress.enabled=true --set ingress.host=secrets.example.com
+```
+
+The redb file lives on a PVC (`persistence.*`), so unread secrets survive
+restarts. Settings from the table above go under `env:`.
+
 ### Pictures
 
 ![enter_secret](https://github.com/KaNe23/secret_share/blob/main/pictures/enter_secret.png?raw=true)

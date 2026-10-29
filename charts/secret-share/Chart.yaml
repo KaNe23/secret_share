@@ -1,0 +1,9 @@
+apiVersion: v2
+name: secret-share
+description: One-time secret sharing, end-to-end encrypted in the browser
+type: application
+version: 0.1.0
+appVersion: "latest"
+home: https://github.com/KaNe23/secret_share
+sources:
+  - https://github.com/KaNe23/secret_share
